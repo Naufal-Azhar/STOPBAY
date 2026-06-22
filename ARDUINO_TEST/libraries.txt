@@ -1,0 +1,11 @@
+# STOPBAY - Arduino Library Version Lock
+# Install exact versions in Arduino IDE Library Manager:
+# Sketch > Include Library > Manage Libraries > Search & Install
+
+LiquidCrystal_I2C@1.1.2          # I2C LCD 20x4 | by Frank de Brabander (paling stabil)
+MFRC522@1.4.12                    # RFID RC522 SPI | by GithubCommunity/miguelbalboa
+ArduinoJson@7.4.3                 # JSON parsing HTTP | by Benoit Blanchon
+ESP32Servo@3.2.1                  # Servo motor | by Kevin Harrington (compatible ESP32 v3.x)
+
+# Board Package (Tools > Board > Boards Manager)
+# esp32@3.3.10                    # by Espressif Systems (Stable, berbasis ESP-IDF v5.5.4)

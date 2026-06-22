@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#059669">
+  <meta name="description" content="STOPBAY - Ticketless Smart Parking">
+  <title>STOPBAY Parking</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: { 50:'#ecfdf5',100:'#d1fae5',200:'#a7f3d0',300:'#6ee7b7',400:'#34d399',500:'#10b981',600:'#059669',700:'#047857',800:'#065f46',900:'#064e3b' }
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="bg-gray-50 text-gray-900 font-sans transition-colors duration-300">
+
+  <div id="app" class="max-w-lg mx-auto min-h-screen flex flex-col">
+
+    <!-- Header -->
+    <header class="bg-gradient-to-r from-brand-700 to-brand-500 text-white px-5 py-4 shadow-lg">
+      <div class="flex items-center justify-between">
+        <div>
+          <h1 class="text-xl font-bold tracking-tight" data-i18n="app_name">STOPBAY</h1>
+          <p class="text-brand-100 text-xs mt-0.5" data-i18n="app_subtitle">Smart Parking</p>
+        </div>
+        <button id="langToggle"
+          class="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors duration-200"
+          title="Switch Language">
+          EN / ID
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-1 px-4 py-6 space-y-5">
+
+      <!-- Lookup Card -->
+      <div id="lookupView" class="space-y-5">
+        <div class="text-center py-6 animate-fadeIn">
+          <div class="w-20 h-20 mx-auto bg-brand-100 rounded-full flex items-center justify-center mb-4 shadow-inner">
+            <svg class="w-10 h-10 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M8 14v3m4-3v3m4-3v3M3 21h18M3 10h18M3 7l9-4 9 4M4 10h16v11H4V10z"/>
+            </svg>
+          </div>
+          <p class="text-lg font-semibold text-gray-700" data-i18n="lookup_title">Cek Status Parkir</p>
+          <p class="text-sm text-gray-400 mt-1" data-i18n="lookup_desc">Masukkan UID kartu KTP/KTM Anda</p>
+        </div>
+        <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 space-y-4">
+          <label class="block">
+            <span class="text-xs font-medium text-gray-500 uppercase tracking-wider" data-i18n="card_uid_label">Card UID</span>
+            <input id="uidInput" type="text" placeholder="e.g. AABBCCDD"
+              class="mt-1 w-full px-4 py-3 border border-gray-200 rounded-xl text-center text-lg tracking-widest uppercase focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition-all duration-200">
+          </label>
+          <button id="lookupBtn"
+            class="w-full py-3 bg-brand-600 hover:bg-brand-700 text-white font-semibold rounded-xl shadow-md hover:shadow-lg active:scale-[0.98] transition-all duration-200 flex items-center justify-center gap-2">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>
+            <span data-i18n="check_btn">Cek Status</span>
+          </button>
+        </div>
+        <p id="lookupError" class="text-red-500 text-sm text-center hidden"></p>
+      </div>
+
+      <!-- Parking Active View -->
+      <div id="parkingView" class="hidden space-y-5 animate-slideUp">
+
+        <!-- Fare Card -->
+        <div class="bg-gradient-to-br from-brand-600 to-brand-800 text-white rounded-2xl shadow-xl p-6 text-center animate-popIn">
+          <p class="text-brand-100 text-xs uppercase tracking-widest mb-1" data-i18n="current_fare_label">Biaya Parkir</p>
+          <p id="fareAmount" class="text-4xl font-extrabold tracking-tight">Rp 0</p>
+          <p id="fareRate" class="text-brand-200 text-sm mt-1">Rp 2.000 / jam</p>
+        </div>
+
+        <!-- Duration Card -->
+        <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
+          <div class="grid grid-cols-4 gap-2 text-center">
+            <div><p id="durHours" class="text-2xl font-bold text-gray-800">0</p><p class="text-xs text-gray-400" data-i18n="hours">Jam</p></div>
+            <div class="border-r border-gray-100"></div>
+            <div><p id="durMinutes" class="text-2xl font-bold text-gray-800">0</p><p class="text-xs text-gray-400" data-i18n="minutes">Menit</p></div>
+            <div class="border-r border-gray-100"></div>
+            <div><p id="durTotalMin" class="text-2xl font-bold text-gray-800">0</p><p class="text-xs text-gray-400" data-i18n="total_min">Total</p></div>
+            <div><p id="balanceAmount" class="text-2xl font-bold text-green-600">0</p><p class="text-xs text-gray-400" data-i18n="balance">Saldo</p></div>
+          </div>
+        </div>
+
+        <!-- Details Card -->
+        <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 space-y-3">
+          <h3 class="font-semibold text-gray-700 text-sm uppercase tracking-wider" data-i18n="session_details">Detail Sesi</h3>
+          <div class="space-y-2 text-sm">
+            <div class="flex justify-between"><span class="text-gray-400" data-i18n="plate_label">Plat</span><span id="detPlate" class="font-medium">-</span></div>
+            <div class="flex justify-between"><span class="text-gray-400" data-i18n="space_label">Slot</span><span id="detSpace" class="font-medium">-</span></div>
+            <div class="flex justify-between"><span class="text-gray-400" data-i18n="card_label">Kartu</span><span id="detCard" class="font-medium font-mono text-xs">-</span></div>
+            <div class="flex justify-between"><span class="text-gray-400" data-i18n="user_label">User</span><span id="detUser" class="font-medium">-</span></div>
+            <div class="flex justify-between"><span class="text-gray-400" data-i18n="status_label">Status</span><span id="detStatus" class="text-green-600 font-semibold">ACTIVE</span></div>
+            <div class="flex justify-between"><span class="text-gray-400" data-i18n="entry_label">Masuk</span><span id="detEntry" class="font-medium text-xs">-</span></div>
+          </div>
+        </div>
+
+        <!-- Action -->
+        <button id="refreshBtn"
+          class="w-full py-3 border-2 border-brand-500 text-brand-600 font-semibold rounded-xl hover:bg-brand-50 active:scale-[0.98] transition-all duration-200 flex items-center justify-center gap-2">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+          </svg>
+          <span data-i18n="refresh_btn">Refresh</span>
+        </button>
+      </div>
+
+      <!-- Loading -->
+      <div id="loadingView" class="hidden text-center py-12 space-y-3 animate-fadeIn">
+        <div class="w-10 h-10 border-3 border-brand-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+        <p class="text-gray-400 text-sm" data-i18n="loading">Memuat data...</p>
+      </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="text-center text-xs text-gray-300 py-4 border-t border-gray-100">
+      <p>STOPBAY v2.0 &copy; 2026</p>
+    </footer>
+  </div>
+
+  <!-- Toast container -->
+  <div id="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 px-5 py-3 rounded-xl text-white text-sm font-medium shadow-xl transform translate-y-20 opacity-0 transition-all duration-300 z-50"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
