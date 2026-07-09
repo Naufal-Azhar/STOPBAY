@@ -1,60 +1,68 @@
 /*
-  STOPBAY - Configuration File v2.0
-  Simpan WiFi credential dan backend API URL di sini.
-  File ini TIDAK di-commit ke repository publik.
+  STOPBAY v3.0 - Konfigurasi
+  Pin definitions, WiFi, API URL
 */
 
 #ifndef CONFIG_H
 #define CONFIG_H
 
 // ============================================================
-// WiFi Credentials
+// WiFi
 // ============================================================
 #define WIFI_SSID     "Infinix NOTE Edge"
 #define WIFI_PASSWORD "wellwellwell"
 
 // ============================================================
-// Backend API URL (FastAPI server)
+// Backend API (placeholder — ganti dengan URL server kamu)
 // ============================================================
-#define API_BASE_URL  "http://192.168.1.100:8000"
+#define API_BASE_URL  "http://alamat-database-kamu.com"
 
 // ============================================================
-// System Settings
-// ============================================================
-#define FORCED_BILLING_MS   300000    // 5 menit (300,000 ms)
-#define FARE_PER_HOUR       2000      // Rp 2,000 per jam
-#define PARKING_SPACE_ID    "SPACE-01"
-
-// ============================================================
-// LCD I2C Settings
+// LCD I2C (16x2, alamat 0x27)
 // ============================================================
 #define LCD_ADDR    0x27
-#define LCD_COLS    20
-#define LCD_ROWS    4
+#define LCD_COLS    16
+#define LCD_ROWS    2
 
 // ============================================================
-// Serial2 Settings (ESP32-CAM communication)
+// SPI Bus (shared untuk semua RFID RC522)
 // ============================================================
-#define SERIAL2_BAUD  115200
+#define SPI_SCK   18
+#define SPI_MISO  19
+#define SPI_MOSI  23
 
 // ============================================================
-// Hardware Availability Switches
+// RFID RC522 (3 unit, SPI shared)
 // ============================================================
-// Uncomment saat hardware sudah tersedia:
-// #define USE_SERVO
-// #define HAS_RFID_SLOT2
-// #define HAS_CAM2
-// #define HAS_LCD2
-// #define HAS_RFID_EXIT
+// RFID 1 — Slot Parkir 1 (ESP-CAM 1)
+#define RFID_SLOT1_SS   17
+#define RFID_SLOT1_RST  33
+
+// RFID 2 — Slot Parkir 2 (ESP-CAM 2)
+#define RFID_SLOT2_SS   16
+#define RFID_SLOT2_RST  32
+
+// RFID 3 — Gerbang Keluar
+#define RFID_EXIT_SS    5
+#define RFID_EXIT_RST   14
 
 // ============================================================
-// RFID Slots
+// Servo Motors
 // ============================================================
-#define RFID_SLOT1_SS   5
-#define RFID_SLOT1_RST  4
-// #define RFID_SLOT2_SS   15    // Belum tersedia
-// #define RFID_SLOT2_RST  2     // Belum tersedia
-// #define RFID_EXIT_SS    27    // Belum tersedia
-// #define RFID_EXIT_RST   32    // Belum tersedia
+#define SERVO_ENTRY_PIN  25  // Gerbang Masuk
+#define SERVO_EXIT_PIN   26  // Gerbang Keluar
+#define SERVO_OPEN_ANGLE   0    // physical: tegak = open
+#define SERVO_CLOSE_ANGLE  90   // physical: tidak tegak = close
+#define SERVO_OPEN_DURATION_MS  3000  // 3 detik terbuka
+
+// ============================================================
+// Touch Sensor TP233 (Gerbang Masuk)
+// ============================================================
+#define TOUCH_PIN  27  // Active HIGH
+
+// ============================================================
+// Sistem
+// ============================================================
+#define FARE_PER_HOUR  1000  // Rp 1.000 per jam
 
 #endif

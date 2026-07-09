@@ -1,458 +1,489 @@
 /*
-  STOPBAY - Ticketless Smart Parking System v2.0
-  Main ESP32 Firmware (Otak Sistem)
+  STOPBAY v3.0 - Smart Parking System
+  ESP32 Master Firmware (DevKit V4)
 
-  Hardware (saat ini):
-    ESP32 DevKit
-    ├── I2C LCD 20x4        (SDA=21, SCL=22, addr=0x27) — Area parkiran
-    ├── RFID RC522 slot 1   (SPI: SS=5, RST=4, SCK=18, MISO=19, MOSI=23)
-    ├── ESP32-CAM #1        (Serial2: RX2=16, TX2=17)
-    └── Servo               (GPIO 13, belum tersedia - #ifdef USE_SERVO)
+  Hardware:
+    ├── LCD 16x2 I2C (0x27)    SDA=21, SCL=22
+    ├── Servo 1 (Gerbang Masuk) GPIO 25
+    ├── Servo 2 (Gerbang Keluar) GPIO 26
+    ├── Touch TP233              GPIO 27 (active HIGH)
+    ├── RFID 1 (Slot 1/CAM1)  SS=17, RST=33
+    ├── RFID 2 (Slot 2/CAM2)  SS=16, RST=32
+    ├── RFID 3 (Exit)         SS=5,  RST=14
+    └── SPI shared: SCK=18, MISO=19, MOSI=23
 
-  Slot 2 & Exit Gate: file function stub (hardware belum tersedia).
+  Alur:
+    A. Touch → Servo1 buka 3s → tutup → IDLE
+    B. Tap RFID1/RFID2 → POST check-in → LCD "Slot X aktif" → IDLE
+    C. (Tidak ada — server/CAM deteksi mobil pergi via WiFi)
+    D. RFID3 tap → POST verify → sukses → Servo2 buka 3s + running text → IDLE
 */
 
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <SPI.h>
 #include <MFRC522.h>
-#include <LiquidCrystal_I2C.h>
+#include <LiquidCrystal_PCF8574.h>
+#include <ESP32Servo.h>
 #include <ArduinoJson.h>
 #include "config.h"
 
-#ifdef USE_SERVO
-  #include <ESP32Servo.h>
-#endif
+// ============================================================
+// OBJECTS
+// ============================================================
+LiquidCrystal_PCF8574 lcd(LCD_ADDR);
 
-// ============================================================
-// PIN DEFINITIONS
-// ============================================================
-#define SCK_PIN   18
-#define MISO_PIN  19
-#define MOSI_PIN  23
-#define SERVO_PIN 13
+// Multi-RFID array: [0]=Slot1, [1]=Slot2, [2]=Exit
+MFRC522 rfid[3] = {
+  MFRC522(RFID_SLOT1_SS, RFID_SLOT1_RST),
+  MFRC522(RFID_SLOT2_SS, RFID_SLOT2_RST),
+  MFRC522(RFID_EXIT_SS,  RFID_EXIT_RST)
+};
+
+Servo servoEntry;  // Gerbang Masuk (pin 25)
+Servo servoExit;   // Gerbang Keluar (pin 26)
+
+// RFID SS pins array (for shared SPI bus management)
+const int rfidSS[3] = { RFID_SLOT1_SS, RFID_SLOT2_SS, RFID_EXIT_SS };
 
 // ============================================================
 // STATE MACHINE
 // ============================================================
-enum SystemState {
+enum State {
   STATE_IDLE,
-  STATE_CAR_DETECTED,
-  STATE_WAITING_CARD,
-  STATE_ACTIVE,
-  STATE_FORCED_BILLING
+  STATE_GATE_OPEN,       // Servo1 terbuka, tunggu tutup
+  STATE_EXIT_GATE        // Servo2 terbuka, running text
 };
-SystemState sysState = STATE_IDLE;
+State state = STATE_IDLE;
 
 // ============================================================
-// GLOBAL OBJECTS
+// SERVO TIMING (non-blocking)
 // ============================================================
-MFRC522 rfidSlot1(RFID_SLOT1_SS, RFID_SLOT1_RST);
-LiquidCrystal_I2C lcd(LCD_ADDR, LCD_COLS, LCD_ROWS);
+unsigned long servoEntryOpenTime = 0;
+bool servoEntryIsOpen = false;
 
-#ifdef USE_SERVO
-  Servo gateServo;
-#endif
+unsigned long servoExitOpenTime = 0;
+bool servoExitIsOpen = false;
 
 // ============================================================
-// STATE VARIABLES
+// TOUCH EDGE DETECTION
 // ============================================================
-String plateNumber     = "";
-String cardUID         = "";
-String camBuffer       = "";
-unsigned long carDetectedTime = 0;
-unsigned long sessionStartTime = 0;
-unsigned long lastReconnect    = 0;
-unsigned long lastLCDRefresh   = 0;
-unsigned long lastHeartbeat    = 0;
-bool forcedBillSent = false;
+bool lastTouchState = false;
+
+// ============================================================
+// RUNNING TEXT
+// ============================================================
+unsigned long lastScrollTime = 0;
+String runningTextMsg = "";
+bool runningTextActive = false;
+
+// ============================================================
+// WIFI
+// ============================================================
+unsigned long lastWifiReconnect = 0;
 
 // ============================================================
 // FORWARD DECLARATIONS
 // ============================================================
 void connectWiFi();
 void maintainWiFi();
-void displayLCD(String l0, String l1, String l2, String l3);
-void resetSession();
-void sendHeartbeat();
-
-// Slot 1 functions
-void readCAMSerial();
-void processCAMData(String data);
-void readRFIDSlot1();
-void processRFIDSlot1(String uid);
-
-// HTTP
-void postSpaceOccupied(String plate);
-void putRegisterCard(String uid);
-void postForcedBilling(String plate);
-void postHeartbeat();
-
-// Slot 2 (stub — hardware belum ada)
-void readRFIDSlot2() { /* STUB: RFID slot 2 belum tersedia */ }
-void processRFIDSlot2(String uid) { /* STUB */ }
-
-// Exit gate (stub — hardware belum ada)
-void readRFIDExit() { /* STUB: RFID exit gate belum tersedia */ }
-void processRFIDExit(String uid) { /* STUB */ }
+void checkTouch();
+void checkServoEntry();
+void checkServoExit();
+void openEntryGate();
+void openExitGate();
+String scanRFID(int index);
+void checkSlotRFID();
+void checkExitRFID();
+void postCheckIn(String uid, int slot);
+void postVerifyExit(String uid);
+void lcdShow(String line1, String line2);
+void lcdStartRunningText(String msg);
+void lcdUpdateRunningText();
 
 // ============================================================
 // SETUP
 // ============================================================
 void setup() {
   Serial.begin(115200);
-  delay(500);
-  Serial.println(F("\n========================================="));
-  Serial.println(F("  STOPBAY v2.0 - Smart Parking System"));
-  Serial.println(F("========================================="));
+  delay(300);
+  Serial.println(F("\n=== STOPBAY v3.0 ==="));
 
-  // --- LCD ---
+  // LCD
   Wire.begin(21, 22);
-  lcd.init();
-  lcd.backlight();
+  lcd.begin(LCD_COLS, LCD_ROWS);
+  lcd.setBacklight(255);
   lcd.clear();
-  displayLCD("STOPBAY v2.0", "Initializing...", "", "");
+  lcdShow("STOPBAY v3.0", "Initializing...");
 
-  // --- WiFi ---
-  connectWiFi();
+  // Touch
+  pinMode(TOUCH_PIN, INPUT);
 
-  // --- SPI & RFID slot 1 ---
-  SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, RFID_SLOT1_SS);
-  rfidSlot1.PCD_Init();
-  byte v1 = rfidSlot1.PCD_ReadRegister(rfidSlot1.VersionReg);
-  if (v1 == 0x00 || v1 == 0xFF) {
-    Serial.println(F("[RFID-S1] WARNING: not detected!"));
-  } else {
-    Serial.printf("[RFID-S1] OK (v0x%02X)\n", v1);
+  // SPI + RFID init
+  // Set all SS pins HIGH (deselected) before init
+  pinMode(RFID_SLOT1_SS, OUTPUT);
+  pinMode(RFID_SLOT2_SS, OUTPUT);
+  pinMode(RFID_EXIT_SS, OUTPUT);
+  digitalWrite(RFID_SLOT1_SS, HIGH);
+  digitalWrite(RFID_SLOT2_SS, HIGH);
+  digitalWrite(RFID_EXIT_SS, HIGH);
+
+  SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI);
+  
+  // Init each RFID with its SS pin LOW (others HIGH)
+  for (int i = 0; i < 3; i++) {
+    // Deselect all first
+    digitalWrite(RFID_SLOT1_SS, HIGH);
+    digitalWrite(RFID_SLOT2_SS, HIGH);
+    digitalWrite(RFID_EXIT_SS, HIGH);
+    delay(10);
+    
+    // Select this RFID
+    digitalWrite(rfidSS[i], LOW);
+    delay(10);
+    
+    rfid[i].PCD_Init();
+    rfid[i].PCD_AntennaOn();  // Enable RF field
+    byte v = rfid[i].PCD_ReadRegister(rfid[i].VersionReg);
+    Serial.printf("[RFID-%d] v0x%02X (SS=%d)\n", i + 1, v, rfidSS[i]);
+    
+    // Deselect after init
+    digitalWrite(rfidSS[i], HIGH);
+    delay(10);
   }
 
-  // --- Serial2 (ESP32-CAM) ---
-  Serial2.begin(SERIAL2_BAUD, SERIAL_8N1, 16, 17);
-  Serial.println(F("[CAM] Serial2 ready (RX2=16, TX2=17)"));
+  // Servo
+  servoEntry.attach(SERVO_ENTRY_PIN);
+  servoExit.attach(SERVO_EXIT_PIN);
+  servoEntry.write(SERVO_CLOSE_ANGLE);
+  servoExit.write(SERVO_CLOSE_ANGLE);
 
-  // --- Servo ---
-  #ifdef USE_SERVO
-    gateServo.attach(SERVO_PIN);
-    gateServo.write(0);
-    Serial.println(F("[SERVO] Ready on pin 13"));
-  #else
-    Serial.println(F("[SERVO] Disabled (no hardware)"));
-  #endif
+  // WiFi
+  connectWiFi();
 
-  // --- Heartbeat ---
-  sendHeartbeat();
-
-  sysState = STATE_IDLE;
-  displayLCD("STOPBAY Ready", "Waiting car...", "Slot 1: Ready", "");
+  // Ready
+  state = STATE_IDLE;
+  lcdShow("Tap kartu", "untuk parkir");
   Serial.println(F("[SYS] Ready"));
 }
 
 // ============================================================
-// MAIN LOOP
+// LOOP
 // ============================================================
 void loop() {
   maintainWiFi();
-  readCAMSerial();
-  readRFIDSlot1();
-  checkForcedBilling();
-  refreshLCD();
 
-  // Heartbeat tiap 30 detik
-  if (millis() - lastHeartbeat > 30000) sendHeartbeat();
+  // Debug: print state every 2s
+  static unsigned long lastStatePrint = 0;
+  if (millis() - lastStatePrint > 2000) {
+    lastStatePrint = millis();
+    Serial.printf("[LOOP] State: %d\n", state);
+  }
 
-  delay(50);
+  switch (state) {
+    case STATE_IDLE:
+      checkTouch();
+      checkSlotRFID();
+      checkExitRFID();
+      break;
+
+    case STATE_GATE_OPEN:
+      checkServoEntry();  // Non-blocking: tutup setelah 3s
+      break;
+
+    case STATE_EXIT_GATE:
+      checkServoExit();    // Non-blocking: tutup setelah 3s
+      lcdUpdateRunningText();
+      break;
+  }
 }
 
 // ============================================================
 // WIFI
 // ============================================================
 void connectWiFi() {
-  Serial.printf("[WiFi] SSID: %s\n", WIFI_SSID);
+  Serial.printf("[WiFi] Connecting to %s\n", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  int a = 0;
-  while (WiFi.status() != WL_CONNECTED && a++ < 40) { delay(500); Serial.print("."); }
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts++ < 40) {
+    delay(500);
+    Serial.print(".");
+  }
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n[WiFi] OK - " + WiFi.localIP().toString());
-    displayLCD("WiFi Connected", WiFi.localIP().toString(), "", "");
+    Serial.printf("\n[WiFi] OK - %s\n", WiFi.localIP().toString().c_str());
+    lcdShow("WiFi Connected", WiFi.localIP().toString());
     delay(1500);
   } else {
     Serial.println(F("\n[WiFi] FAILED"));
-    displayLCD("WiFi FAILED", "Offline mode", "", "");
+    lcdShow("WiFi FAILED", "Offline mode");
     delay(1500);
   }
 }
 
 void maintainWiFi() {
-  if (WiFi.status() != WL_CONNECTED && millis() - lastReconnect > 15000) {
-    lastReconnect = millis();
+  if (WiFi.status() != WL_CONNECTED && millis() - lastWifiReconnect > 15000) {
+    lastWifiReconnect = millis();
     WiFi.reconnect();
   }
 }
 
 // ============================================================
-// CAM SERIAL READ
+// PHASE A: TOUCH → ENTRY GATE
 // ============================================================
-void readCAMSerial() {
-  while (Serial2.available()) {
-    char c = Serial2.read();
-    if (c == '\n' || c == '\r') {
-      if (camBuffer.length() > 0) {
-        camBuffer.trim();
-        processCAMData(camBuffer);
-        camBuffer = "";
-      }
-    } else {
-      camBuffer += c;
-      if (camBuffer.length() > 40) camBuffer = ""; // overflow
+void checkTouch() {
+  bool touchState = digitalRead(TOUCH_PIN);
+
+  // Debug: print touch state every 500ms
+  static unsigned long lastTouchPrint = 0;
+  if (millis() - lastTouchPrint > 500) {
+    lastTouchPrint = millis();
+    Serial.printf("[A] Touch state: %d\n", touchState);
+  }
+
+  // Edge detection: LOW→HIGH transition
+  if (touchState && !lastTouchState) {
+    Serial.println(F("[A] Touch detected → opening entry gate"));
+    openEntryGate();
+    state = STATE_GATE_OPEN;
+  }
+  lastTouchState = touchState;
+}
+
+void openEntryGate() {
+  servoEntry.write(SERVO_OPEN_ANGLE);
+  servoEntryOpenTime = millis();
+  servoEntryIsOpen = true;
+  lcdShow("Gerbang Masuk", "Terbuka...");
+}
+
+void checkServoEntry() {
+  if (!servoEntryIsOpen) return;
+  if (millis() - servoEntryOpenTime >= SERVO_OPEN_DURATION_MS) {
+    servoEntry.write(SERVO_CLOSE_ANGLE);
+    servoEntryIsOpen = false;
+    Serial.println(F("[A] Entry gate closed"));
+    state = STATE_IDLE;
+    lcdShow("Tap kartu", "untuk parkir");
+  }
+}
+
+// ============================================================
+// PHASE B: SLOT CHECK-IN (RFID1 or RFID2)
+// ============================================================
+void checkSlotRFID() {
+  // Scan RFID1 (index 0) dan RFID2 (index 1)
+  for (int i = 0; i < 2; i++) {
+    String uid = scanRFID(i);
+    if (uid.length() > 0) {
+      int slot = i + 1;
+      Serial.printf("[B] Slot %d tap: %s\n", slot, uid.c_str());
+      lcdShow("Slot " + String(slot) + " aktif", "UID: " + uid.substring(0, 8));
+      postCheckIn(uid, slot);
+      delay(2000);  // Show slot info
+      lcdShow("Tap kartu", "untuk parkir");
+      return;
     }
   }
 }
 
-void processCAMData(String data) {
-  Serial.println("[CAM] Data: " + data);
+// ============================================================
+// PHASE D: EXIT GATE (RFID3 → verify → servo2 → running text)
+// ============================================================
+void checkExitRFID() {
+  // Debug: print scanning every 1s
+  static unsigned long lastScanPrint = 0;
+  if (millis() - lastScanPrint > 1000) {
+    lastScanPrint = millis();
+    Serial.println(F("[D] Scanning RFID Exit..."));
+  }
 
-  if (sysState == STATE_IDLE || sysState == STATE_FORCED_BILLING) {
-    // CAM deteksi mobil masuk
-    plateNumber = data;
-    carDetectedTime = millis();
-    forcedBillSent = false;
-    sysState = STATE_WAITING_CARD;
+  String uid = scanRFID(2);  // RFID3 = index 2
+  if (uid.length() > 0) {
+    Serial.printf("[D] Exit tap: %s\n", uid.c_str());
+    lcdShow("Verifikasi...", "Tunggu");
+    postVerifyExit(uid);
+  }
+}
 
-    displayLCD("Car Detected!", "Plate: " + plateNumber,
-               "Tap KTP/KTM...", "5 min grace");
+void openExitGate() {
+  servoExit.write(SERVO_OPEN_ANGLE);
+  servoExitOpenTime = millis();
+  servoExitIsOpen = true;
+  lcdStartRunningText("Pembayaran berhasil, selamat jalan!");
+}
 
-    Serial.printf("[STATE] Car detected: %s (5-min timer)\n", plateNumber.c_str());
-    postSpaceOccupied(plateNumber);
-  } else {
-    Serial.println(F("[CAM] Ignored — system busy"));
+void checkServoExit() {
+  if (!servoExitIsOpen) return;
+  if (millis() - servoExitOpenTime >= SERVO_OPEN_DURATION_MS) {
+    servoExit.write(SERVO_CLOSE_ANGLE);
+    servoExitIsOpen = false;
+    runningTextActive = false;
+    Serial.println(F("[D] Exit gate closed"));
+    state = STATE_IDLE;
+    lcdShow("Tap kartu", "untuk parkir");
   }
 }
 
 // ============================================================
-// RFID SLOT 1 READ
+// RFID SCAN (array-based, shared SPI)
 // ============================================================
-void readRFIDSlot1() {
-  if (!rfidSlot1.PICC_IsNewCardPresent()) return;
-  if (!rfidSlot1.PICC_ReadCardSerial()) return;
+String scanRFID(int index) {
+  // Activate only this RFID's SS pin (shared SPI bus)
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(rfidSS[i], (i == index) ? LOW : HIGH);
+  }
+  delayMicroseconds(500);  // ponytail: SS settle time
+
+  // Enable antenna (ponytail: skip full re-init to save time)
+  rfid[index].PCD_AntennaOn();
+
+  bool cardPresent = rfid[index].PICC_IsNewCardPresent();
+  if (!cardPresent) {
+    // Debug: print version register to check if RFID is alive
+    if (millis() % 5000 < 100) {  // Print every ~5s to avoid spam
+      byte v = rfid[index].PCD_ReadRegister(rfid[index].VersionReg);
+      Serial.printf("[RFID-%d] No card (v0x%02X, SS=%d)\n", index + 1, v, rfidSS[index]);
+    }
+    return "";
+  }
+  
+  bool cardRead = rfid[index].PICC_ReadCardSerial();
+  if (!cardRead) {
+    Serial.printf("[RFID-%d] Card present but read failed\n", index + 1);
+    return "";
+  }
 
   String uid = "";
-  for (byte i = 0; i < rfidSlot1.uid.size; i++) {
-    if (rfidSlot1.uid.uidByte[i] < 0x10) uid += "0";
-    uid += String(rfidSlot1.uid.uidByte[i], HEX);
+  for (byte i = 0; i < rfid[index].uid.size; i++) {
+    if (rfid[index].uid.uidByte[i] < 0x10) uid += "0";
+    uid += String(rfid[index].uid.uidByte[i], HEX);
   }
   uid.toUpperCase();
 
-  rfidSlot1.PICC_HaltA();
-  rfidSlot1.PCD_StopCrypto1();
+  rfid[index].PICC_HaltA();
+  rfid[index].PCD_StopCrypto1();
 
-  Serial.println("[RFID-S1] UID: " + uid);
-  processRFIDSlot1(uid);
-  delay(400);
-}
-
-void processRFIDSlot1(String uid) {
-  if (sysState == STATE_WAITING_CARD) {
-    // Registrasi: link card UID ke plate yang menunggu
-    cardUID = uid;
-    sessionStartTime = millis();
-    sysState = STATE_ACTIVE;
-
-    displayLCD("Card: " + uid, "Registering...",
-               "Plate: " + plateNumber, "");
-
-    Serial.printf("[STATE] Card registered: %s\n", uid.c_str());
-    putRegisterCard(uid);
-  } else {
-    Serial.println(F("[RFID-S1] Tap ignored — invalid state"));
-  }
+  Serial.printf("[RFID-%d] Card read OK: %s\n", index + 1, uid.c_str());
+  delay(100);  // Debounce (ponytail: reduced from 300ms)
+  return uid;
 }
 
 // ============================================================
-// FORCED BILLING CHECK (5 menit)
+// HTTP: POST /api/parking/checkin
 // ============================================================
-void checkForcedBilling() {
-  if (sysState != STATE_WAITING_CARD) return;
-  if (forcedBillSent) return;
-  if (millis() - carDetectedTime < FORCED_BILLING_MS) return;
-
-  // 5 menit habis, tidak ada tap kartu → forced billing
-  forcedBillSent = true;
-  sysState = STATE_FORCED_BILLING;
-
-  displayLCD("TIME'S UP!", "No card tapped",
-             "Forced billing", "Plate: " + plateNumber);
-
-  Serial.println(F("[STATE] Forced billing triggered!"));
-  postForcedBilling(plateNumber);
-
-  delay(3000);
-  resetSession();
-}
-
-// ============================================================
-// RESET SESSION
-// ============================================================
-void resetSession() {
-  plateNumber = "";
-  cardUID = "";
-  carDetectedTime = 0;
-  sessionStartTime = 0;
-  forcedBillSent = false;
-  sysState = STATE_IDLE;
-  displayLCD("STOPBAY Ready", "Waiting car...", "Slot 1: Ready", "");
-  Serial.println(F("[SYS] Session reset"));
-}
-
-// ============================================================
-// LCD HELPERS
-// ============================================================
-void displayLCD(String l0, String l1, String l2, String l3) {
-  lcd.clear();
-  lcd.setCursor(0, 0); lcd.print(l0.substring(0, LCD_COLS));
-  lcd.setCursor(0, 1); lcd.print(l1.substring(0, LCD_COLS));
-  lcd.setCursor(0, 2); lcd.print(l2.substring(0, LCD_COLS));
-  lcd.setCursor(0, 3); lcd.print(l3.substring(0, LCD_COLS));
-}
-
-void refreshLCD() {
-  if (sysState != STATE_ACTIVE) return;
-  if (millis() - lastLCDRefresh < 1000) return;
-  lastLCDRefresh = millis();
-
-  unsigned long elapsed = (millis() - sessionStartTime) / 1000;
-  unsigned long h = elapsed / 3600;
-  unsigned long m = (elapsed % 3600) / 60;
-  unsigned long s = elapsed % 60;
-  unsigned long fare = max((unsigned long)((elapsed / 3600.0) * FARE_PER_HOUR),
-                           (unsigned long)FARE_PER_HOUR);
-
-  char b1[21], b2[21], b3[21];
-  snprintf(b1, 20, "Plate: %s", plateNumber.c_str());
-  snprintf(b2, 20, "%02lu:%02lu:%02lu | Rp %lu", h, m, s, fare);
-  snprintf(b3, 20, "Card: %s", cardUID.c_str());
-
-  lcd.setCursor(0, 0); lcd.print("ACTIVE SESSION");
-  lcd.setCursor(0, 1); lcd.print(b1);
-  lcd.setCursor(0, 2); lcd.print(b2);
-  lcd.setCursor(0, 3); lcd.print(b3);
-}
-
-// ============================================================
-// HTTP: POST /api/parking/space-occupied
-// ============================================================
-void postSpaceOccupied(String plate) {
-  if (WiFi.status() != WL_CONNECTED) return;
-  HTTPClient http;
-  http.begin(String(API_BASE_URL) + "/api/parking/space-occupied");
-  http.addHeader("Content-Type", "application/json");
-  http.setTimeout(8000);
-
-  JsonDocument doc;
-  doc["plate_number"] = plate;
-  doc["parking_space_id"] = PARKING_SPACE_ID;
-  doc["snapshot_url"] = "PLACEHOLDER_BASE64";
-
-  String body; serializeJson(doc, body);
-  Serial.println("[HTTP] POST space-occupied: " + body);
-  int code = http.POST(body);
-  if (code > 0) {
-    Serial.printf("[HTTP] %d: %s\n", code, http.getString().c_str());
-  } else {
-    Serial.printf("[HTTP] FAIL: %s\n", http.errorToString(code).c_str());
-  }
-  http.end();
-}
-
-// ============================================================
-// HTTP: PUT /api/parking/register-card
-// ============================================================
-void putRegisterCard(String uid) {
+void postCheckIn(String uid, int slot) {
   if (WiFi.status() != WL_CONNECTED) {
-    // Offline: tetap lanjut sesi lokal
-    displayLCD("Card Registered", "(Offline Mode)", "Plate: " + plateNumber, "");
+    lcdShow("Offline", "Check-in gagal");
     return;
   }
+
   HTTPClient http;
-  http.begin(String(API_BASE_URL) + "/api/parking/register-card");
+  http.begin(String(API_BASE_URL) + "/api/parking/checkin");
   http.addHeader("Content-Type", "application/json");
   http.setTimeout(8000);
 
   JsonDocument doc;
-  doc["card_uid"] = uid;
-  doc["parking_space_id"] = PARKING_SPACE_ID;
-  doc["plate_number"] = plateNumber;
-  doc["space_label"] = "SLOT_1"; // distinguish slot 1
+  doc["uid"] = uid;
+  doc["slot"] = slot;
 
-  String body; serializeJson(doc, body);
-  Serial.println("[HTTP] PUT register-card: " + body);
-  int code = http.PUT(body);
+  String body;
+  serializeJson(doc, body);
+  Serial.println("[HTTP] POST checkin: " + body);
+
+  int code = http.POST(body);
   if (code > 0) {
     String resp = http.getString();
     Serial.printf("[HTTP] %d: %s\n", code, resp.c_str());
 
     JsonDocument r;
     if (!deserializeJson(r, resp) && r["success"]) {
-      displayLCD("Regis Success!", "Slot 1 Active",
-                 "Rp " + String(FARE_PER_HOUR) + "/hour", "Plate: " + plateNumber);
+      lcdShow("Slot " + String(slot) + " Aktif", "UID: " + uid.substring(0, 8));
     } else {
-      displayLCD("Regis Failed", "Server issue", "Plate: " + plateNumber, "");
+      lcdShow("Check-in Gagal", "Coba lagi");
+      state = STATE_IDLE;
     }
   } else {
     Serial.printf("[HTTP] FAIL: %s\n", http.errorToString(code).c_str());
-    displayLCD("Server Error", "Regis offline", "Plate: " + plateNumber, "");
+    lcdShow("Server Error", "Check-in gagal");
+    state = STATE_IDLE;
   }
   http.end();
 }
 
 // ============================================================
-// HTTP: POST /api/parking/forced-billing
+// HTTP: POST /api/parking/verify-exit
 // ============================================================
-void postForcedBilling(String plate) {
-  if (WiFi.status() != WL_CONNECTED) return;
+void postVerifyExit(String uid) {
+  if (WiFi.status() != WL_CONNECTED) {
+    lcdShow("Offline", "Verify gagal");
+    delay(2000);
+    lcdShow("Tap kartu", "untuk parkir");
+    return;
+  }
+
   HTTPClient http;
-  http.begin(String(API_BASE_URL) + "/api/parking/forced-billing");
+  http.begin(String(API_BASE_URL) + "/api/parking/verify-exit");
   http.addHeader("Content-Type", "application/json");
   http.setTimeout(8000);
 
   JsonDocument doc;
-  doc["plate_number"] = plate;
-  doc["parking_space_id"] = PARKING_SPACE_ID;
+  doc["uid"] = uid;
 
-  String body; serializeJson(doc, body);
-  Serial.println("[HTTP] POST forced-billing: " + body);
+  String body;
+  serializeJson(doc, body);
+  Serial.println("[HTTP] POST verify-exit: " + body);
+
   int code = http.POST(body);
   if (code > 0) {
-    Serial.printf("[HTTP] %d: %s\n", code, http.getString().c_str());
+    String resp = http.getString();
+    Serial.printf("[HTTP] %d: %s\n", code, resp.c_str());
+
+    JsonDocument r;
+    if (!deserializeJson(r, resp) && r["success"]) {
+      // Sukses → buka gerbang keluar + running text
+      state = STATE_EXIT_GATE;
+      openExitGate();
+    } else {
+      lcdShow("Pembayaran", "Gagal");
+      delay(2000);
+      lcdShow("Tap kartu", "untuk parkir");
+    }
+  } else {
+    Serial.printf("[HTTP] FAIL: %s\n", http.errorToString(code).c_str());
+    lcdShow("Server Error", "Coba lagi");
+    delay(2000);
+    lcdShow("Tap kartu", "untuk parkir");
   }
   http.end();
 }
 
 // ============================================================
-// HTTP: POST /api/hardware/heartbeat
+// LCD HELPERS
 // ============================================================
-void sendHeartbeat() {
-  lastHeartbeat = millis();
-  if (WiFi.status() != WL_CONNECTED) return;
-  postHeartbeat();
+void lcdShow(String line1, String line2) {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(line1.substring(0, LCD_COLS));
+  lcd.setCursor(0, 1);
+  lcd.print(line2.substring(0, LCD_COLS));
 }
 
-void postHeartbeat() {
-  HTTPClient http;
-  http.begin(String(API_BASE_URL) + "/api/hardware/heartbeat");
-  http.addHeader("Content-Type", "application/json");
-  http.setTimeout(5000);
+void lcdStartRunningText(String msg) {
+  runningTextMsg = msg;
+  runningTextActive = true;
+  lastScrollTime = millis();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Pembayaran OK!");
+  lcd.setCursor(0, 1);
+  // Print first 16 chars initially
+  lcd.print(runningTextMsg.substring(0, LCD_COLS));
+}
 
-  JsonDocument doc;
-  doc["device_id"] = "MAIN_ESP32_01";
-  doc["device_type"] = "MAIN_CONTROLLER";
-  doc["location"] = "PARKING_AREA";
-  doc["slots_active"] = 1; // slot 1 only for now
+void lcdUpdateRunningText() {
+  if (!runningTextActive) return;
+  if (millis() - lastScrollTime < 300) return;  // Scroll speed: 300ms per shift
+  lastScrollTime = millis();
 
-  // Check RFID status
-  byte v = rfidSlot1.PCD_ReadRegister(rfidSlot1.VersionReg);
-  doc["rfid_slot1_ok"] = (v != 0x00 && v != 0xFF);
-
-  String body; serializeJson(doc, body);
-  http.POST(body);
-  http.end();
+  lcd.scrollDisplayLeft();
 }
