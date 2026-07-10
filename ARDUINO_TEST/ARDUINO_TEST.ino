@@ -277,10 +277,17 @@ void checkSlotRFID() {
     if (uid.length() > 0) {
       int slot = i + 1;
       Serial.printf("[B] Slot %d tap: %s\n", slot, uid.c_str());
+      
+      // TEST MODE: skip HTTP, directly show success
+      // TODO: revert to postCheckIn(uid, slot) for production
       lcdShow("Slot " + String(slot) + " aktif", "UID: " + uid.substring(0, 8));
-      postCheckIn(uid, slot);
-      delay(2000);  // Show slot info
+      Serial.printf("[TEST] Slot %d check-in OK (test mode)\n", slot);
+      delay(2000);
       lcdShow("Tap kartu", "untuk parkir");
+      
+      // PRODUCTION MODE (uncomment when server ready):
+      // lcdShow("Slot " + String(slot), "Mendaftar...");
+      // postCheckIn(uid, slot);
       return;
     }
   }
@@ -300,8 +307,17 @@ void checkExitRFID() {
   String uid = scanRFID(2);  // RFID3 = index 2
   if (uid.length() > 0) {
     Serial.printf("[D] Exit tap: %s\n", uid.c_str());
-    lcdShow("Verifikasi...", "Tunggu");
-    postVerifyExit(uid);
+    
+    // TEST MODE: skip HTTP verify, directly open exit gate
+    // TODO: revert to postVerifyExit(uid) for production
+    lcdShow("Verifikasi...", "OK (Test Mode)");
+    delay(1000);
+    state = STATE_EXIT_GATE;
+    openExitGate();
+    
+    // PRODUCTION MODE (uncomment when server ready):
+    // lcdShow("Verifikasi...", "Tunggu");
+    // postVerifyExit(uid);
   }
 }
 
