@@ -1,4 +1,5 @@
-/* STOPBAY PWA - App Logic */
+/* STOPBAY v3.0 PWA - App Logic */
+// Last updated: 2026-07-14
 
 // ========================================
 // i18n — Bilingual (ID / EN) with toggle
@@ -15,6 +16,11 @@ const i18n = {
     refresh_btn: 'Refresh', loading: 'Memuat data...',
     error_conn: 'Gagal terhubung ke server', error_not_found: 'Tidak ada sesi aktif',
     toast_ok: 'Berhasil!', toast_refresh: 'Data diperbarui',
+    plat_search_title: 'Cari Plat Nomor', plat_search_desc: 'Masukkan plat nomor kendaraan',
+    plat_label_search: 'Plat Nomor', plat_search_btn: 'Cari Plat',
+    stream_title: 'Live Kamera', stream_slot1: 'Slot 1', stream_slot2: 'Slot 2',
+    stream_offline: 'Kamera offline', push_enable_btn: 'Aktifkan Notifikasi',
+    push_granted: 'Notifikasi aktif', push_denied: 'Notifikasi diblokir',
   },
   en: {
     app_name: 'STOPBAY', app_subtitle: 'Smart Parking',
@@ -27,6 +33,11 @@ const i18n = {
     refresh_btn: 'Refresh', loading: 'Loading data...',
     error_conn: 'Failed to connect to server', error_not_found: 'No active session',
     toast_ok: 'Success!', toast_refresh: 'Data updated',
+    plat_search_title: 'Search Plate Number', plat_search_desc: 'Enter vehicle plate number',
+    plat_label_search: 'Plate Number', plat_search_btn: 'Search Plate',
+    stream_title: 'Live Camera', stream_slot1: 'Slot 1', stream_slot2: 'Slot 2',
+    stream_offline: 'Camera offline', push_enable_btn: 'Enable Notifications',
+    push_granted: 'Notifications enabled', push_denied: 'Notifications blocked',
   }
 };
 
@@ -66,6 +77,7 @@ function showToast(msg, type = 'success') {
 function showView(view) {
   document.getElementById('lookupView').classList.add('hidden');
   document.getElementById('parkingView').classList.add('hidden');
+  document.getElementById('streamView').classList.add('hidden');
   document.getElementById('loadingView').classList.add('hidden');
   if (view) document.getElementById(view).classList.remove('hidden');
 }
@@ -196,3 +208,108 @@ document.getElementById('refreshBtn').addEventListener('click', async () => {
 // ========================================
 applyLang();
 showView('lookupView');
+
+// ========================================
+// v3.0: Search by Plate Number
+// ========================================
+document.getElementById('platSearchBtn').addEventListener('click', async () => {
+  const plate = document.getElementById('platInput').value.trim().toUpperCase();
+  if (!plate) return;
+
+  showView('loadingView');
+  document.getElementById('lookupError').classList.add('hidden');
+
+  try {
+    const res = await fetch(`${API_BASE}/api/parking/by-plate/${encodeURIComponent(plate)}`);
+    const data = await res.json();
+    if (data.success && data.data) {
+      lastCardUID = data.data.card_uid || '';
+      const userRes = await fetchUser(lastCardUID);
+      updateParkingView(data.data, userRes.success ? userRes.data : null);
+      showView('parkingView');
+      startAutoRefresh();
+    } else {
+      showView('lookupView');
+      document.getElementById('lookupError').textContent = data.message || 'Plate not found';
+      document.getElementById('lookupError').classList.remove('hidden');
+    }
+  } catch {
+    showView('lookupView');
+    document.getElementById('lookupError').textContent = t('error_conn');
+    document.getElementById('lookupError').classList.remove('hidden');
+  }
+});
+
+document.getElementById('platInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('platSearchBtn').click();
+});
+
+// ========================================
+// v3.0: Live Stream View
+// ========================================
+function liveStream(slot) {
+  const img = document.getElementById('streamImg');
+  const status = document.getElementById('streamStatus');
+  img.src = `${API_BASE}/api/stream/${slot}`;
+  status.textContent = `${t('stream_slot' + slot)} — Connecting...`;
+  showView('streamView');
+
+  img.onerror = () => {
+    status.textContent = t('stream_offline');
+  };
+  img.onload = () => {
+    status.textContent = `${t('stream_slot' + slot)} — Live`;
+  };
+}
+
+document.getElementById('streamSlot1Btn').addEventListener('click', () => liveStream(1));
+document.getElementById('streamSlot2Btn').addEventListener('click', () => liveStream(2));
+
+// ========================================
+// v3.0: Push Notification
+// ========================================
+async function subscribePush() {
+  if (!('Notification' in window) || !('serviceWorker' in navigator)) {
+    showToast('Push not supported', 'error');
+    return;
+  }
+
+  const permission = await Notification.requestPermission();
+  const statusEl = document.getElementById('pushStatus');
+
+  if (permission !== 'granted') {
+    statusEl.textContent = t('push_denied');
+    statusEl.className = 'text-red-400 text-xs';
+    return;
+  }
+
+  statusEl.textContent = t('push_granted');
+  statusEl.className = 'text-green-400 text-xs';
+
+  const sw = await navigator.serviceWorker.ready;
+  const sub = await sw.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array('YOUR_VAPID_PUBLIC_KEY'),
+  });
+
+  try {
+    await fetch(`${API_BASE}/api/push/subscribe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sub.toJSON()),
+    });
+    console.log('[Push] Subscribed');
+  } catch (e) {
+    console.error('[Push] Subscribe failed', e);
+  }
+}
+
+// ponytail: VAPID key conversion helper
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  return Uint8Array.from(rawData, (c) => c.charCodeAt(0));
+}
+
+document.getElementById('pushEnableBtn').addEventListener('click', subscribePush);

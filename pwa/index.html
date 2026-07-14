@@ -37,7 +37,11 @@
           title="Switch Language">
           EN / ID
         </button>
+        <button id="pushEnableBtn"
+          class="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors duration-200"
+          data-i18n="push_enable_btn">Notifikasi</button>
       </div>
+      <p id="pushStatus" class="text-brand-100 text-xs mt-1"></p>
     </header>
 
     <!-- Main Content -->
@@ -69,6 +73,24 @@
           </button>
         </div>
         <p id="lookupError" class="text-red-500 text-sm text-center hidden"></p>
+
+        <!-- v3.0: Search by Plate -->
+        <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 space-y-4">
+          <p class="text-sm font-semibold text-gray-700" data-i18n="plat_search_title">Cari Plat Nomor</p>
+          <p class="text-xs text-gray-400" data-i18n="plat_search_desc">Masukkan plat nomor kendaraan</p>
+          <label class="block">
+            <span class="text-xs font-medium text-gray-500 uppercase tracking-wider" data-i18n="plat_label_search">Plat Nomor</span>
+            <input id="platInput" type="text" placeholder="e.g. B 1234 CD"
+              class="mt-1 w-full px-4 py-3 border border-gray-200 rounded-xl text-center text-lg tracking-wider uppercase focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition-all duration-200">
+          </label>
+          <button id="platSearchBtn"
+            class="w-full py-3 bg-brand-600 hover:bg-brand-700 text-white font-semibold rounded-xl shadow-md hover:shadow-lg active:scale-[0.98] transition-all duration-200 flex items-center justify-center gap-2">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>
+            <span data-i18n="plat_search_btn">Cari Plat</span>
+          </button>
+        </div>
       </div>
 
       <!-- Parking Active View -->
@@ -116,6 +138,24 @@
         </button>
       </div>
 
+      <!-- v3.0: Live Stream View -->
+      <div id="streamView" class="hidden space-y-4 animate-slideUp">
+        <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 text-center">
+          <h3 class="font-semibold text-gray-700 text-sm mb-3" data-i18n="stream_title">Live Kamera</h3>
+          <div class="flex gap-2 mb-3">
+            <button id="streamSlot1Btn"
+              class="flex-1 py-3 bg-brand-600 hover:bg-brand-700 text-white font-medium rounded-xl transition-colors"
+              data-i18n="stream_slot1">Slot 1</button>
+            <button id="streamSlot2Btn"
+              class="flex-1 py-3 bg-brand-600 hover:bg-brand-700 text-white font-medium rounded-xl transition-colors"
+              data-i18n="stream_slot2">Slot 2</button>
+          </div>
+          <img id="streamImg" src="" alt="Camera stream"
+            class="w-full rounded-xl border border-gray-200 bg-gray-100 min-h-[200px]">
+          <p id="streamStatus" class="text-xs text-gray-400 mt-2">Pilih slot kamera</p>
+        </div>
+      </div>
+
       <!-- Loading -->
       <div id="loadingView" class="hidden text-center py-12 space-y-3 animate-fadeIn">
         <div class="w-10 h-10 border-3 border-brand-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
@@ -125,7 +165,7 @@
 
     <!-- Footer -->
     <footer class="text-center text-xs text-gray-300 py-4 border-t border-gray-100">
-      <p>STOPBAY v2.0 &copy; 2026</p>
+      <p>STOPBAY v3.0 &copy; 2026</p>
     </footer>
   </div>
 

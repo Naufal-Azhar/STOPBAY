@@ -12,11 +12,11 @@
     ├── RFID 3 (Exit)         SS=5,  RST=14
     └── SPI shared: SCK=18, MISO=19, MOSI=23
 
-  Alur:
-    A. Touch → Servo1 buka 3s → tutup → IDLE
-    B. Tap RFID1/RFID2 → POST check-in → LCD "Slot X aktif" → IDLE
-    C. (Tidak ada — server/CAM deteksi mobil pergi via WiFi)
-    D. RFID3 tap → POST verify → sukses → Servo2 buka 3s + running text → IDLE
+  Alur v3.0:
+    A. Touch → Servo1 buka 3s → tutup → CAM stream → YOLO+OCR detect
+    B. Plate detected via MQTT → LCD "Dekatkan kartu RFID" → wait RFID1/RFID2
+    C. RFID tap → POST /api/parking/register-card → LCD "Registrasi berhasil"
+    D. RFID3 tap → POST /api/parking/exit → LCD fare → Servo2 buka 3s → IDLE
 */
 
 #include <WiFi.h>
@@ -26,6 +26,7 @@
 #include <LiquidCrystal_PCF8574.h>
 #include <ESP32Servo.h>
 #include <ArduinoJson.h>
+#include <PubSubClient.h>
 #include "config.h"
 
 // ============================================================
@@ -47,14 +48,32 @@ Servo servoExit;   // Gerbang Keluar (pin 26)
 const int rfidSS[3] = { RFID_SLOT1_SS, RFID_SLOT2_SS, RFID_EXIT_SS };
 
 // ============================================================
-// STATE MACHINE
+// MQTT (v3.0)
+// ============================================================
+WiFiClient espClient;
+PubSubClient mqtt(espClient);
+unsigned long lastMqttReconnect = 0;
+
+// Detected plates from MQTT (received from detection script)
+String plateSlot1 = "";
+String plateSlot2 = "";
+unsigned long plateSlot1Time = 0;
+unsigned long plateSlot2Time = 0;
+#define PLATE_EXPIRY_MS  30000  // plate expires after 30s
+
+// ============================================================
+// STATE MACHINE (v3.0)
 // ============================================================
 enum State {
   STATE_IDLE,
   STATE_GATE_OPEN,       // Servo1 terbuka, tunggu tutup
+  STATE_RFID_WAIT,       // (NEW v3) Plate detected, wait RFID tap
   STATE_EXIT_GATE        // Servo2 terbuka, running text
 };
 State state = STATE_IDLE;
+
+// Slots with pending plate (waiting for RFID)
+bool slotWaitingRFID[3] = {false, false, false};  // [0]=slot1, [1]=slot2, [2]=exit
 
 // ============================================================
 // SERVO TIMING (non-blocking)
@@ -87,6 +106,9 @@ unsigned long lastWifiReconnect = 0;
 // ============================================================
 void connectWiFi();
 void maintainWiFi();
+void mqttCallback(char* topic, byte* payload, unsigned int length);
+void reconnectMQTT();
+void maintainMQTT();
 void checkTouch();
 void checkServoEntry();
 void checkServoExit();
@@ -95,8 +117,8 @@ void openExitGate();
 String scanRFID(int index);
 void checkSlotRFID();
 void checkExitRFID();
-void postCheckIn(String uid, int slot);
-void postVerifyExit(String uid);
+void postRegisterCard(String uid, int slot);
+void postExit(String uid);
 void lcdShow(String line1, String line2);
 void lcdStartRunningText(String msg);
 void lcdUpdateRunningText();
@@ -161,6 +183,11 @@ void setup() {
   // WiFi
   connectWiFi();
 
+  // MQTT (v3.0)
+  mqtt.setServer(MQTT_BROKER, MQTT_PORT);
+  mqtt.setCallback(mqttCallback);
+  reconnectMQTT();
+
   // Ready
   state = STATE_IDLE;
   lcdShow("Tap kartu", "untuk parkir");
@@ -172,12 +199,14 @@ void setup() {
 // ============================================================
 void loop() {
   maintainWiFi();
+  maintainMQTT();
+  mqtt.loop();
 
   // Debug: print state every 2s
   static unsigned long lastStatePrint = 0;
   if (millis() - lastStatePrint > 2000) {
     lastStatePrint = millis();
-    Serial.printf("[LOOP] State: %d\n", state);
+    Serial.printf("[LOOP] State: %d  plate1=%s  plate2=%s\n", state, plateSlot1.c_str(), plateSlot2.c_str());
   }
 
   switch (state) {
@@ -188,11 +217,16 @@ void loop() {
       break;
 
     case STATE_GATE_OPEN:
-      checkServoEntry();  // Non-blocking: tutup setelah 3s
+      checkServoEntry();
+      checkSlotRFID();     // RFID bisa tap pas gate masih open
+      break;
+
+    case STATE_RFID_WAIT:
+      checkSlotRFID();     // Tunggu RFID tap untuk register plate
       break;
 
     case STATE_EXIT_GATE:
-      checkServoExit();    // Non-blocking: tutup setelah 3s
+      checkServoExit();
       lcdUpdateRunningText();
       break;
   }
@@ -224,6 +258,70 @@ void maintainWiFi() {
   if (WiFi.status() != WL_CONNECTED && millis() - lastWifiReconnect > 15000) {
     lastWifiReconnect = millis();
     WiFi.reconnect();
+  }
+}
+
+// ============================================================
+// MQTT CALLBACK (v3.0)
+// ============================================================
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  char buf[128];
+  unsigned int len = min(length, 127u);
+  memcpy(buf, payload, len);
+  buf[len] = '\0';
+
+  Serial.printf("[MQTT] Topic: %s  Payload: %s\n", topic, buf);
+
+  JsonDocument doc;
+  if (deserializeJson(doc, buf)) {
+    Serial.println("[MQTT] JSON parse failed");
+    return;
+  }
+
+  String plateStr = doc["plate"] | "";
+  int slot = doc["slot"] | 0;
+
+  if (plateStr.length() == 0 || slot < 1 || slot > 2) return;
+
+  if (slot == 1) {
+    plateSlot1 = plateStr;
+    plateSlot1Time = millis();
+    slotWaitingRFID[0] = true;
+  } else {
+    plateSlot2 = plateStr;
+    plateSlot2Time = millis();
+    slotWaitingRFID[1] = true;
+  }
+
+  // Update LCD only if in IDLE state
+  if (state == STATE_IDLE || state == STATE_RFID_WAIT) {
+    state = STATE_RFID_WAIT;
+    lcdShow("Slot " + String(slot) + ": " + plateStr, "Dekatkan kartu RFID");
+  }
+
+  Serial.printf("[MQTT] Plate stored: slot%d = %s\n", slot, plateStr.c_str());
+}
+
+void reconnectMQTT() {
+  if (mqtt.connected()) return;
+
+  String clientId = "ESP32_MAIN_" + String(random(0xffff), HEX);
+  Serial.printf("[MQTT] Connecting %s...\n", clientId.c_str());
+
+  if (mqtt.connect(clientId.c_str())) {
+    Serial.println("[MQTT] Connected");
+    mqtt.subscribe(MQTT_TOPIC_SLOT1);
+    mqtt.subscribe(MQTT_TOPIC_SLOT2);
+    Serial.printf("[MQTT] Subscribed: %s, %s\n", MQTT_TOPIC_SLOT1, MQTT_TOPIC_SLOT2);
+  } else {
+    Serial.printf("[MQTT] Connect failed, rc=%d\n", mqtt.state());
+  }
+}
+
+void maintainMQTT() {
+  if (!mqtt.connected() && millis() - lastMqttReconnect > 5000) {
+    lastMqttReconnect = millis();
+    reconnectMQTT();
   }
 }
 
@@ -268,28 +366,32 @@ void checkServoEntry() {
 }
 
 // ============================================================
-// PHASE B: SLOT CHECK-IN (RFID1 or RFID2)
+// PHASE B: SLOT CHECK-IN (RFID1 or RFID2) — v3.0 with plate check
 // ============================================================
 void checkSlotRFID() {
-  // Scan RFID1 (index 0) dan RFID2 (index 1)
   for (int i = 0; i < 2; i++) {
     String uid = scanRFID(i);
-    if (uid.length() > 0) {
-      int slot = i + 1;
-      Serial.printf("[B] Slot %d tap: %s\n", slot, uid.c_str());
-      
-      // TEST MODE: skip HTTP, directly show success
-      // TODO: revert to postCheckIn(uid, slot) for production
-      lcdShow("Slot " + String(slot) + " aktif", "UID: " + uid.substring(0, 8));
-      Serial.printf("[TEST] Slot %d check-in OK (test mode)\n", slot);
+    if (uid.length() == 0) continue;
+
+    int slot = i + 1;
+    Serial.printf("[B] Slot %d tap: %s\n", slot, uid.c_str());
+
+    String& plateRef = (slot == 1) ? plateSlot1 : plateSlot2;
+    unsigned long& plateTime = (slot == 1) ? plateSlot1Time : plateSlot2Time;
+
+    // Check if plate detected + not expired
+    if (plateRef.length() == 0 || millis() - plateTime > PLATE_EXPIRY_MS) {
+      lcdShow("Slot " + String(slot), "Plat tdk terdeteksi");
+      Serial.printf("[B] Slot %d: no plate detected, rejecting\n", slot);
       delay(2000);
       lcdShow("Tap kartu", "untuk parkir");
-      
-      // PRODUCTION MODE (uncomment when server ready):
-      // lcdShow("Slot " + String(slot), "Mendaftar...");
-      // postCheckIn(uid, slot);
+      state = STATE_IDLE;
       return;
     }
+
+    lcdShow("Slot " + String(slot), "Mendaftar...");
+    postRegisterCard(uid, slot);
+    return;
   }
 }
 
@@ -297,27 +399,11 @@ void checkSlotRFID() {
 // PHASE D: EXIT GATE (RFID3 → verify → servo2 → running text)
 // ============================================================
 void checkExitRFID() {
-  // Debug: print scanning every 1s
-  static unsigned long lastScanPrint = 0;
-  if (millis() - lastScanPrint > 1000) {
-    lastScanPrint = millis();
-    Serial.println(F("[D] Scanning RFID Exit..."));
-  }
-
   String uid = scanRFID(2);  // RFID3 = index 2
   if (uid.length() > 0) {
     Serial.printf("[D] Exit tap: %s\n", uid.c_str());
-    
-    // TEST MODE: skip HTTP verify, directly open exit gate
-    // TODO: revert to postVerifyExit(uid) for production
-    lcdShow("Verifikasi...", "OK (Test Mode)");
-    delay(1000);
-    state = STATE_EXIT_GATE;
-    openExitGate();
-    
-    // PRODUCTION MODE (uncomment when server ready):
-    // lcdShow("Verifikasi...", "Tunggu");
-    // postVerifyExit(uid);
+    lcdShow("Verifikasi...", "Tunggu");
+    postExit(uid);
   }
 }
 
@@ -385,69 +471,82 @@ String scanRFID(int index) {
 }
 
 // ============================================================
-// HTTP: POST /api/parking/checkin
+// HTTP: PUT /api/parking/register-card (v3.0)
 // ============================================================
-void postCheckIn(String uid, int slot) {
+void postRegisterCard(String uid, int slot) {
   if (WiFi.status() != WL_CONNECTED) {
-    lcdShow("Offline", "Check-in gagal");
+    lcdShow("Offline", "Register gagal");
+    delay(2000);
+    state = STATE_IDLE;
+    lcdShow("Tap kartu", "untuk parkir");
     return;
   }
 
+  String& plateRef = (slot == 1) ? plateSlot1 : plateSlot2;
+
   HTTPClient http;
-  http.begin(String(API_BASE_URL) + "/api/parking/checkin");
+  http.begin(String(API_BASE_URL) + "/api/parking/register-card");
   http.addHeader("Content-Type", "application/json");
   http.setTimeout(8000);
 
   JsonDocument doc;
-  doc["uid"] = uid;
-  doc["slot"] = slot;
+  doc["card_uid"] = uid;
+  doc["parking_space_id"] = "SPACE-0" + String(slot);
+  doc["plate_number"] = plateRef;
+  doc["space_label"] = "SLOT_" + String(slot);
 
   String body;
   serializeJson(doc, body);
-  Serial.println("[HTTP] POST checkin: " + body);
+  Serial.println("[HTTP] PUT register-card: " + body);
 
-  int code = http.POST(body);
+  int code = http.PUT(body);
   if (code > 0) {
     String resp = http.getString();
     Serial.printf("[HTTP] %d: %s\n", code, resp.c_str());
 
     JsonDocument r;
     if (!deserializeJson(r, resp) && r["success"]) {
-      lcdShow("Slot " + String(slot) + " Aktif", "UID: " + uid.substring(0, 8));
+      String name = r["user_name"] | "User";
+      lcdShow("Registrasi OK", name);
+      slotWaitingRFID[slot - 1] = false;
+      plateRef = "";
     } else {
-      lcdShow("Check-in Gagal", "Coba lagi");
-      state = STATE_IDLE;
+      lcdShow("Register Gagal", "Coba lagi");
     }
   } else {
     Serial.printf("[HTTP] FAIL: %s\n", http.errorToString(code).c_str());
-    lcdShow("Server Error", "Check-in gagal");
-    state = STATE_IDLE;
+    lcdShow("Server Error", "Register gagal");
   }
+
   http.end();
+  delay(2000);
+  state = STATE_IDLE;
+  lcdShow("Tap kartu", "untuk parkir");
 }
 
 // ============================================================
-// HTTP: POST /api/parking/verify-exit
+// HTTP: POST /api/parking/exit (v3.0)
 // ============================================================
-void postVerifyExit(String uid) {
+void postExit(String uid) {
   if (WiFi.status() != WL_CONNECTED) {
-    lcdShow("Offline", "Verify gagal");
+    lcdShow("Offline", "Exit gagal");
     delay(2000);
+    state = STATE_IDLE;
     lcdShow("Tap kartu", "untuk parkir");
     return;
   }
 
   HTTPClient http;
-  http.begin(String(API_BASE_URL) + "/api/parking/verify-exit");
+  http.begin(String(API_BASE_URL) + "/api/parking/exit");
   http.addHeader("Content-Type", "application/json");
   http.setTimeout(8000);
 
   JsonDocument doc;
-  doc["uid"] = uid;
+  doc["card_uid"] = uid;
 
   String body;
   serializeJson(doc, body);
-  Serial.println("[HTTP] POST verify-exit: " + body);
+  Serial.println("[HTTP] POST exit: " + body);
 
   int code = http.POST(body);
   if (code > 0) {
@@ -456,18 +555,23 @@ void postVerifyExit(String uid) {
 
     JsonDocument r;
     if (!deserializeJson(r, resp) && r["success"]) {
-      // Sukses → buka gerbang keluar + running text
+      int fare = r["total_fare"] | 0;
+      char buf[32];
+      snprintf(buf, sizeof(buf), "Rp %d,-", fare);
       state = STATE_EXIT_GATE;
       openExitGate();
+      lcdStartRunningText("Tarif: " + String(buf) + " — Selamat jalan!");
     } else {
       lcdShow("Pembayaran", "Gagal");
       delay(2000);
+      state = STATE_IDLE;
       lcdShow("Tap kartu", "untuk parkir");
     }
   } else {
     Serial.printf("[HTTP] FAIL: %s\n", http.errorToString(code).c_str());
     lcdShow("Server Error", "Coba lagi");
     delay(2000);
+    state = STATE_IDLE;
     lcdShow("Tap kartu", "untuk parkir");
   }
   http.end();
