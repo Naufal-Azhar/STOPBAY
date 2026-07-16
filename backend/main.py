@@ -41,17 +41,8 @@ from schemas import (
     ParkingStatusResponse, ParkingStatusData, ExitResponse, HeartbeatResponse,
 )
 from services.stream_proxy import proxy_stream
-
-# ponytail: optional modules — skip if deps not installed (Render free tier)
-try:
-    from api.ota import router as ota_router
-except ImportError:
-    ota_router = None
-
-try:
-    from services.push_notification import router as push_router
-except ImportError:
-    push_router = None
+from api.ota import router as ota_router
+from services.push_notification import router as push_router
 
 # ============================================================
 # CONFIG
@@ -146,10 +137,8 @@ app = FastAPI(title="STOPBAY v3.0", version="3.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 
-if ota_router:
-    app.include_router(ota_router)
-if push_router:
-    app.include_router(push_router)
+app.include_router(ota_router)
+app.include_router(push_router)
 
 @app.get("/")
 def root():
