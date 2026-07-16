@@ -387,7 +387,10 @@ void postRegisterCard(String uid, int slot) {
   Serial.println("[HTTP] PUT register-card: " + body);
 
   int code = http.PUT(body);
-  if (code > 0) {
+  if (code == 409) {
+    Serial.println("[HTTP] 409: Card already parked");
+    lcdShow("Kartu sudah", "parkir");
+  } else if (code > 0) {
     String resp = http.getString();
     Serial.printf("[HTTP] %d: %s\n", code, resp.c_str());
 
