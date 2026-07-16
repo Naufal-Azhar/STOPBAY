@@ -1,0 +1,2 @@
+esp32-camera by Espressif
+ArduinoJson by Benoit Blanchon
