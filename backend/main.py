@@ -38,7 +38,8 @@ from schemas import (
     SpaceOccupiedResponse, RegisterCardResponse, ForcedBillingResponse,
     ParkingStatusResponse, ParkingStatusData, ExitResponse, HeartbeatResponse,
 )
-from services.stream_proxy import proxy_stream
+from services.stream_proxy import proxy_stream, SLOT_IPS
+from services.capture_detect import capture_and_detect
 from api.ota import router as ota_router
 from services.push_notification import router as push_router
 
@@ -117,17 +118,12 @@ def space_occupied(req: SpaceOccupiedRequest, db: Session = Depends(get_db)):
 
     if existing:
         existing.plate_number = req.plate_number
-        existing.status = "WAITING"
-        existing.card_uid = None
-        existing.entry_time = now
         existing.snapshot_url = req.snapshot_url
-        existing.space_label = req.space_label or existing.space_label
         existing.expiry_time = expiry
-        existing.user_name = None
-        existing.nik = None
+        # Don't overwrite card_uid/user — RFID may have tapped first
         db.commit()
         return SpaceOccupiedResponse(
-            success=True, message="Space re-occupied, waiting for card",
+            success=True, message="Plate updated for existing session",
             id=existing.id, expiry_time=expiry.isoformat(), grace_period_minutes=GRACE_MINUTES,
         )
 
@@ -150,30 +146,43 @@ def space_occupied(req: SpaceOccupiedRequest, db: Session = Depends(get_db)):
 # ============================================================
 @app.put("/api/parking/register-card", response_model=RegisterCardResponse)
 def register_card(req: RegisterCardRequest, db: Session = Depends(get_db)):
-    session = db.query(ActiveParking).filter(
-        ActiveParking.parking_space_id == req.parking_space_id,
-        ActiveParking.status == "WAITING",
-    ).order_by(ActiveParking.entry_time.desc()).first()
+    active_elsewhere = db.query(ActiveParking).filter(
+        ActiveParking.card_uid == req.card_uid,
+        ActiveParking.status == "ACTIVE",
+    ).first()
+    if active_elsewhere:
+        raise HTTPException(409, "Card already parked")
 
-    if not session:
-        raise HTTPException(404, "No waiting session found for this space")
-
-    # Check grace period
-    elapsed = (datetime.now(timezone.utc) - session.entry_time.replace(tzinfo=timezone.utc)).total_seconds()
-    if elapsed > GRACE_MINUTES * 60:
-        db.delete(session); db.commit()
-        raise HTTPException(408, "Grace period expired — session cancelled")
-
-    # Auto-register user
+    now = datetime.now(timezone.utc)
     user = _get_or_create_user(db, req.card_uid)
 
-    session.card_uid = req.card_uid
-    session.status = "ACTIVE"
-    session.entry_time = datetime.now(timezone.utc)
-    session.user_name = user.full_name
-    session.nik = user.nik
-    session.expiry_time = None  # clear forced billing deadline
-    session.last_update = datetime.now(timezone.utc)
+    session = db.query(ActiveParking).filter(
+        ActiveParking.parking_space_id == req.parking_space_id,
+        ActiveParking.status.in_(["WAITING", "ACTIVE"]),
+    ).order_by(ActiveParking.entry_time.desc()).first()
+
+    if session:
+        # Join existing session
+        session.card_uid = req.card_uid
+        session.status = "ACTIVE"
+        session.entry_time = now
+        session.user_name = user.full_name
+        session.nik = user.nik
+        session.expiry_time = None
+        session.last_update = now
+    else:
+        # No session yet — create new (plate filled later by detection)
+        session = ActiveParking(
+            parking_space_id=req.parking_space_id,
+            card_uid=req.card_uid,
+            status="ACTIVE",
+            entry_time=now,
+            user_name=user.full_name,
+            nik=user.nik,
+            space_label=f"SLOT_{req.parking_space_id[-1]}",
+        )
+        db.add(session)
+
     db.commit()
     db.refresh(session)
 
@@ -182,6 +191,42 @@ def register_card(req: RegisterCardRequest, db: Session = Depends(get_db)):
         fare_per_hour=FARE_PER_HOUR, entry_time=session.entry_time.isoformat(),
         user_name=user.full_name, balance=user.balance,
     )
+
+
+# ============================================================
+# POST /api/parking/capture/{slot}  (NEW v3 — on-demand plate capture)
+# Triggered by ESP32 right after register-card succeeds.
+# Takes a few snapshots from the CAM, runs YOLO+OCR, fills in plate_number
+# on the ACTIVE session for that slot, returns YOLO detection details.
+# ============================================================
+@app.post("/api/parking/capture/{slot}")
+def capture_plate(slot: int, db: Session = Depends(get_db)):
+    cam_ip = SLOT_IPS.get(slot)
+    if not cam_ip:
+        raise HTTPException(400, f"Invalid slot: {slot}")
+
+    space_id = f"SPACE-0{slot}"
+    session = db.query(ActiveParking).filter(
+        ActiveParking.parking_space_id == space_id,
+        ActiveParking.status == "ACTIVE",
+    ).order_by(ActiveParking.entry_time.desc()).first()
+
+    if not session:
+        raise HTTPException(404, "No active session for this slot")
+
+    result = capture_and_detect(cam_ip)
+
+    if result["success"]:
+        session.plate_number = result["plate_number"]
+        db.commit()
+
+    return {
+        "success": result["success"],
+        "plate_number": result["plate_number"],
+        "votes": result["votes"],
+        "total_shots": result["total_shots"],
+        "detections": result["shots"],  # YOLO bbox + confidence per shot
+    }
 
 
 # ============================================================
