@@ -1,6 +1,6 @@
 """
 STOPBAY v3.0 - FastAPI Backend
-Ticketless Smart Parking System with MQTT + Camera Stream Proxy
+Ticketless Smart Parking System — HTTP-only + Camera Stream Proxy
 
 Endpoints:
   POST   /api/parking/space-occupied
@@ -11,16 +11,16 @@ Endpoints:
   GET    /api/parking/active
   GET    /api/parking/logs
   GET    /api/parking/stats
-  GET    /api/parking/by-plate/{plate}     (NEW v3)
+  GET    /api/parking/by-plate/{plate}     (v3)
   POST   /api/hardware/heartbeat
   GET    /api/hardware/status
   GET    /api/users
   GET    /api/users/{card_uid}
   POST   /api/users/{card_uid}/topup
-  GET    /api/stream/{slot}               (NEW v3)
+  GET    /api/stream/{slot}               (v3)
 """
 
-import asyncio, json, os, random, uuid
+import asyncio, json, random, uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -29,8 +29,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-
-import aiomqtt
 
 from database import SessionLocal, get_db, init_db
 from models import ActiveParking, ParkingLog, User, HardwareStatus
@@ -47,90 +45,18 @@ from services.push_notification import router as push_router
 # ============================================================
 # CONFIG
 # ============================================================
-MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")
-MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
-
 FARE_PER_HOUR = 1000  # v3: Rp 1.000/jam
 GRACE_MINUTES = 5
 FORCED_BILLING_FARE = FARE_PER_HOUR
 
 
 # ============================================================
-# MQTT Listener (background task)
-# ============================================================
-async def mqtt_listener(client: aiomqtt.Client):
-    """Subscribe plates/#, forward plate detections to space-occupied."""
-    await client.subscribe("plates/#")
-    async for message in client.messages:
-        try:
-            data = json.loads(message.payload.decode())
-            plate = data.get("plate", "").strip()
-            slot = data.get("slot", 1)
-            if not plate:
-                continue
-            # ponytail: slot -> parking_space_id mapping
-            space_id = f"SPACE-0{slot}"
-            _handle_plate_detection(plate, space_id)
-        except Exception:
-            pass
-
-
-def _handle_plate_detection(plate_number: str, parking_space_id: str):
-    """Write plate detection directly to DB (no HTTP call needed)."""
-    db = SessionLocal()
-    try:
-        existing = db.query(ActiveParking).filter(
-            ActiveParking.parking_space_id == parking_space_id,
-            ActiveParking.status.in_(["WAITING", "ACTIVE"]),
-        ).first()
-        now = datetime.now(timezone.utc)
-        expiry = now + timedelta(minutes=GRACE_MINUTES)
-
-        if existing:
-            existing.plate_number = plate_number
-            existing.status = "WAITING"
-            existing.card_uid = None
-            existing.entry_time = now
-            existing.space_label = f"SLOT_{parking_space_id[-1]}"
-            existing.expiry_time = expiry
-            existing.user_name = None
-            existing.nik = None
-        else:
-            session = ActiveParking(
-                parking_space_id=parking_space_id,
-                plate_number=plate_number,
-                status="WAITING",
-                entry_time=now,
-                space_label=f"SLOT_{parking_space_id[-1]}",
-                expiry_time=expiry,
-            )
-            db.add(session)
-        db.commit()
-    except Exception:
-        db.rollback()
-    finally:
-        db.close()
-
-
-# ============================================================
-# APP + Lifespan (MQTT startup/shutdown)
+# APP + Lifespan
 # ============================================================
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
-    # Start MQTT client
-    try:
-        async with aiomqtt.Client(MQTT_BROKER, MQTT_PORT) as mqtt_client:
-            task = asyncio.create_task(mqtt_listener(mqtt_client))
-            yield
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-    except aiomqtt.MqttError as e:
-        print(f"[MQTT] Broker unavailable: {e}. Backend running without MQTT.")
-        yield
+    yield
 
 
 app = FastAPI(title="STOPBAY v3.0", version="3.0.0", lifespan=lifespan)
@@ -226,9 +152,11 @@ def space_occupied(req: SpaceOccupiedRequest, db: Session = Depends(get_db)):
 def register_card(req: RegisterCardRequest, db: Session = Depends(get_db)):
     session = db.query(ActiveParking).filter(
         ActiveParking.parking_space_id == req.parking_space_id,
-        ActiveParking.plate_number == req.plate_number,
         ActiveParking.status == "WAITING",
-    ).order_by(ActiveParking.entry_time.desc()).first()
+    )
+    if req.plate_number:
+        session = session.filter(ActiveParking.plate_number == req.plate_number)
+    session = session.order_by(ActiveParking.entry_time.desc()).first()
 
     if not session:
         raise HTTPException(404, "No waiting session found")

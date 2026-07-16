@@ -20,7 +20,7 @@ class SpaceOccupiedRequest(BaseModel):
 class RegisterCardRequest(BaseModel):
     card_uid: str = Field(..., min_length=1, max_length=64)
     parking_space_id: str = Field(default="SPACE-01", max_length=20)
-    plate_number: str = Field(..., min_length=1, max_length=20)
+    plate_number: Optional[str] = Field(default=None, min_length=1, max_length=20)
     space_label: Optional[str] = Field(default="SLOT_1")
 
 
