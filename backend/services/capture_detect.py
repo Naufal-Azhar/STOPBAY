@@ -160,10 +160,12 @@ def _save_capture(frame, space_id: str) -> str:
     return f"/captures/{filename}"
 
 
-def capture_and_detect(cam_ip: str, shots: int = 3, delay: float = 0.3) -> dict:
+def capture_and_detect(cam_ip: str, space_id: str, shots: int = 3, delay: float = 0.3) -> dict:
     """
     Take `shots` snapshots in quick succession, run YOLO+OCR on each,
     vote for the most consistent plate reading (replaces continuous-stream voting).
+    Saves an annotated (bounding-box) copy of the winning shot's frame to disk;
+    saves a plain frame if no plate was detected at all.
 
     Returns:
         {
@@ -172,15 +174,18 @@ def capture_and_detect(cam_ip: str, shots: int = 3, delay: float = 0.3) -> dict:
             "votes": int,
             "total_shots": int,
             "shots": [{"shot": 1, "detections": [...]}, ...],
+            "snapshot_url": str | None,
         }
     """
     shots_taken = []
+    frames_taken = []  # parallel to shots_taken; None where capture failed
     plate_votes = Counter()
 
     for i in range(shots):
         frame = _grab_frame(cam_ip)
         if frame is None:
             shots_taken.append({"shot": i + 1, "detections": [], "error": "capture failed"})
+            frames_taken.append(None)
             continue
 
         dets = _detect_plate(frame)
@@ -188,24 +193,46 @@ def capture_and_detect(cam_ip: str, shots: int = 3, delay: float = 0.3) -> dict:
             if len(d["ocr_text"]) >= 4:
                 plate_votes[d["ocr_text"]] += 1
         shots_taken.append({"shot": i + 1, "detections": dets})
+        frames_taken.append(frame)
 
         if i < shots - 1:
             time.sleep(delay)
 
+    last_valid_frame = next((f for f in reversed(frames_taken) if f is not None), None)
+
     if not plate_votes:
+        snapshot_url = None
+        if last_valid_frame is not None:
+            annotated = _draw_annotations(last_valid_frame, [], None)
+            snapshot_url = _save_capture(annotated, space_id)
         return {
             "success": False,
             "plate_number": None,
             "votes": 0,
             "total_shots": len(shots_taken),
             "shots": shots_taken,
+            "snapshot_url": snapshot_url,
         }
 
     best_plate, votes = plate_votes.most_common(1)[0]
+
+    winning_index, winning_dets = None, []
+    for idx, shot in enumerate(shots_taken):
+        if any(d["ocr_text"] == best_plate for d in shot["detections"]):
+            winning_index, winning_dets = idx, shot["detections"]
+            break
+
+    winning_frame = frames_taken[winning_index] if winning_index is not None else last_valid_frame
+    snapshot_url = None
+    if winning_frame is not None:
+        annotated = _draw_annotations(winning_frame, winning_dets, best_plate)
+        snapshot_url = _save_capture(annotated, space_id)
+
     return {
         "success": True,
         "plate_number": best_plate,
         "votes": votes,
         "total_shots": len(shots_taken),
         "shots": shots_taken,
+        "snapshot_url": snapshot_url,
     }

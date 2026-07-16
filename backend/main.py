@@ -214,11 +214,13 @@ def capture_plate(slot: int, db: Session = Depends(get_db)):
     if not session:
         raise HTTPException(404, "No active session for this slot")
 
-    result = capture_and_detect(cam_ip)
+    result = capture_and_detect(cam_ip, space_id)
 
     if result["success"]:
         session.plate_number = result["plate_number"]
-        db.commit()
+    if result.get("snapshot_url"):
+        session.snapshot_url = result["snapshot_url"]
+    db.commit()
 
     return {
         "success": result["success"],
@@ -226,6 +228,7 @@ def capture_plate(slot: int, db: Session = Depends(get_db)):
         "votes": result["votes"],
         "total_shots": result["total_shots"],
         "detections": result["shots"],  # YOLO bbox + confidence per shot
+        "snapshot_url": result.get("snapshot_url"),
     }
 
 
