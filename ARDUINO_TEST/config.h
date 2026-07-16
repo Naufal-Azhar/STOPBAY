@@ -15,7 +15,10 @@
 // ============================================================
 // Backend API (placeholder — ganti dengan URL server kamu)
 // ============================================================
-#define API_BASE_URL  "http://10.110.138.238:8000"
+// Local (development):
+// #define API_BASE_URL  "http://10.110.138.238:8000"
+// Cloud (production demo):
+#define API_BASE_URL  "https://stopbay-xxxx.onrender.com"  // TODO: ganti setelah deploy Render
 
 // ============================================================
 // LCD I2C (16x2, alamat 0x27)
