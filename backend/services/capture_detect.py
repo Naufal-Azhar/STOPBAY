@@ -7,9 +7,11 @@ Replaces continuous-stream detection.py: camera only wakes up when triggered,
 instead of streaming/inferring 24/7.
 """
 
+import glob
 import os
 import time
 from collections import Counter
+from datetime import datetime
 
 import cv2
 import numpy as np
@@ -19,6 +21,7 @@ from ultralytics import YOLO
 import easyocr
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "license-plate-detect.pt")
+CAPTURES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "captures")
 
 _model = None
 _reader = None
@@ -139,6 +142,22 @@ def _draw_annotations(frame, detections: list, winning_plate: str | None):
         cv2.putText(annotated, label, (x1, max(y1 - 8, 12)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
     return annotated
+
+
+def _save_capture(frame, space_id: str) -> str:
+    """Save frame to backend/captures/{space_id}_{timestamp}.jpg, overwriting any prior file for this space_id."""
+    os.makedirs(CAPTURES_DIR, exist_ok=True)
+
+    for old_file in glob.glob(os.path.join(CAPTURES_DIR, f"{space_id}_*.jpg")):
+        try:
+            os.remove(old_file)
+        except OSError:
+            pass
+
+    filename = f"{space_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
+    filepath = os.path.join(CAPTURES_DIR, filename)
+    cv2.imwrite(filepath, frame)
+    return f"/captures/{filename}"
 
 
 def capture_and_detect(cam_ip: str, shots: int = 3, delay: float = 0.3) -> dict:
