@@ -96,6 +96,7 @@ String scanRFID(int index);
 void checkSlotRFID();
 void checkExitRFID();
 void postRegisterCard(String uid, int slot);
+void postCapturePlate(int slot);
 void postExit(String uid);
 void lcdShow(String line1, String line2);
 void lcdStartRunningText(String msg);
@@ -394,6 +395,8 @@ void postRegisterCard(String uid, int slot) {
     if (!deserializeJson(r, resp) && r["success"]) {
       String name = r["user_name"] | "User";
       lcdShow("Registrasi OK", name);
+      delay(1000);
+      postCapturePlate(slot);
     } else {
       lcdShow("Register Gagal", "Coba lagi");
     }
@@ -406,6 +409,40 @@ void postRegisterCard(String uid, int slot) {
   delay(2000);
   state = STATE_IDLE;
   lcdShow("Tap kartu", "untuk parkir");
+}
+
+// ============================================================
+// HTTP: POST /api/parking/capture/{slot} (v3.0)
+// Triggers on-demand plate capture — CAM takes a few shots, YOLO+OCR runs
+// on backend, plate_number gets filled into the ACTIVE session.
+// ============================================================
+void postCapturePlate(int slot) {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  lcdShow("Memfoto plat...", "Mohon tunggu");
+
+  HTTPClient http;
+  http.begin(String(API_BASE_URL) + "/api/parking/capture/" + String(slot));
+  http.setTimeout(15000);  // YOLO+OCR butuh waktu lebih lama dari request biasa
+
+  int code = http.POST("");
+  if (code > 0) {
+    String resp = http.getString();
+    Serial.printf("[HTTP] capture %d: %s\n", code, resp.c_str());
+
+    JsonDocument r;
+    if (!deserializeJson(r, resp) && r["success"]) {
+      String plate = r["plate_number"] | "?";
+      lcdShow("Plat terdeteksi", plate);
+    } else {
+      lcdShow("Plat tdk terbaca", "Lanjut parkir");
+    }
+  } else {
+    Serial.printf("[HTTP] capture FAIL: %s\n", http.errorToString(code).c_str());
+    lcdShow("Capture gagal", "Lanjut parkir");
+  }
+  http.end();
+  delay(1500);
 }
 
 // ============================================================
