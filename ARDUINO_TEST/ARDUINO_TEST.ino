@@ -12,10 +12,11 @@
     ├── RFID 3 (Exit)         SS=5,  RST=14
     └── SPI shared: SCK=18, MISO=19, MOSI=23
 
-  Alur v3.0 (HTTP-only):
-    A. Touch → Servo1 buka 3s → tutup → CAM stream → YOLO+OCR detect → HTTP POST plate
-    B. RFID1/RFID2 tap → HTTP PUT /api/parking/register-card → LCD "Registrasi OK"
-    C. RFID3 tap → HTTP POST /api/parking/exit → LCD fare → Servo2 buka 3s → IDLE
+  Alur v3.0:
+    A. Touch → Servo1 buka 3s → tutup → CAM stream → YOLO+OCR detect
+    B. Plate detected via MQTT → LCD "Dekatkan kartu RFID" → wait RFID1/RFID2
+    C. RFID tap → POST /api/parking/register-card → LCD "Registrasi berhasil"
+    D. RFID3 tap → POST /api/parking/exit → LCD fare → Servo2 buka 3s → IDLE
 */
 
 #include <WiFi.h>
@@ -25,6 +26,7 @@
 #include <LiquidCrystal_PCF8574.h>
 #include <ESP32Servo.h>
 #include <ArduinoJson.h>
+#include <PubSubClient.h>
 #include "config.h"
 
 // ============================================================
@@ -46,8 +48,18 @@ Servo servoExit;   // Gerbang Keluar (pin 26)
 const int rfidSS[3] = { RFID_SLOT1_SS, RFID_SLOT2_SS, RFID_EXIT_SS };
 
 // ============================================================
-// HTTP (v3.0 — MQTT removed)
+// MQTT (v3.0)
 // ============================================================
+WiFiClient espClient;
+PubSubClient mqtt(espClient);
+unsigned long lastMqttReconnect = 0;
+
+// Detected plates from MQTT (received from detection script)
+String plateSlot1 = "";
+String plateSlot2 = "";
+unsigned long plateSlot1Time = 0;
+unsigned long plateSlot2Time = 0;
+#define PLATE_EXPIRY_MS  30000  // plate expires after 30s
 
 // ============================================================
 // STATE MACHINE (v3.0)
@@ -59,6 +71,9 @@ enum State {
   STATE_EXIT_GATE        // Servo2 terbuka, running text
 };
 State state = STATE_IDLE;
+
+// Slots with pending plate (waiting for RFID)
+bool slotWaitingRFID[3] = {false, false, false};  // [0]=slot1, [1]=slot2, [2]=exit
 
 // ============================================================
 // SERVO TIMING (non-blocking)
@@ -91,6 +106,9 @@ unsigned long lastWifiReconnect = 0;
 // ============================================================
 void connectWiFi();
 void maintainWiFi();
+void mqttCallback(char* topic, byte* payload, unsigned int length);
+void reconnectMQTT();
+void maintainMQTT();
 void checkTouch();
 void checkServoEntry();
 void checkServoExit();
@@ -165,6 +183,11 @@ void setup() {
   // WiFi
   connectWiFi();
 
+  // MQTT (v3.0)
+  mqtt.setServer(MQTT_BROKER, MQTT_PORT);
+  mqtt.setCallback(mqttCallback);
+  reconnectMQTT();
+
   // Ready
   state = STATE_IDLE;
   lcdShow("Tap kartu", "untuk parkir");
@@ -176,12 +199,14 @@ void setup() {
 // ============================================================
 void loop() {
   maintainWiFi();
+  maintainMQTT();
+  mqtt.loop();
 
   // Debug: print state every 2s
   static unsigned long lastStatePrint = 0;
   if (millis() - lastStatePrint > 2000) {
     lastStatePrint = millis();
-    Serial.printf("[LOOP] State: %d\n", state);
+    Serial.printf("[LOOP] State: %d  plate1=%s  plate2=%s\n", state, plateSlot1.c_str(), plateSlot2.c_str());
   }
 
   switch (state) {
@@ -237,6 +262,70 @@ void maintainWiFi() {
 }
 
 // ============================================================
+// MQTT CALLBACK (v3.0)
+// ============================================================
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  char buf[128];
+  unsigned int len = min(length, 127u);
+  memcpy(buf, payload, len);
+  buf[len] = '\0';
+
+  Serial.printf("[MQTT] Topic: %s  Payload: %s\n", topic, buf);
+
+  JsonDocument doc;
+  if (deserializeJson(doc, buf)) {
+    Serial.println("[MQTT] JSON parse failed");
+    return;
+  }
+
+  String plateStr = doc["plate"] | "";
+  int slot = doc["slot"] | 0;
+
+  if (plateStr.length() == 0 || slot < 1 || slot > 2) return;
+
+  if (slot == 1) {
+    plateSlot1 = plateStr;
+    plateSlot1Time = millis();
+    slotWaitingRFID[0] = true;
+  } else {
+    plateSlot2 = plateStr;
+    plateSlot2Time = millis();
+    slotWaitingRFID[1] = true;
+  }
+
+  // Update LCD only if in IDLE state
+  if (state == STATE_IDLE || state == STATE_RFID_WAIT) {
+    state = STATE_RFID_WAIT;
+    lcdShow("Slot " + String(slot) + ": " + plateStr, "Dekatkan kartu RFID");
+  }
+
+  Serial.printf("[MQTT] Plate stored: slot%d = %s\n", slot, plateStr.c_str());
+}
+
+void reconnectMQTT() {
+  if (mqtt.connected()) return;
+
+  String clientId = "ESP32_MAIN_" + String(random(0xffff), HEX);
+  Serial.printf("[MQTT] Connecting %s...\n", clientId.c_str());
+
+  if (mqtt.connect(clientId.c_str())) {
+    Serial.println("[MQTT] Connected");
+    mqtt.subscribe(MQTT_TOPIC_SLOT1);
+    mqtt.subscribe(MQTT_TOPIC_SLOT2);
+    Serial.printf("[MQTT] Subscribed: %s, %s\n", MQTT_TOPIC_SLOT1, MQTT_TOPIC_SLOT2);
+  } else {
+    Serial.printf("[MQTT] Connect failed, rc=%d\n", mqtt.state());
+  }
+}
+
+void maintainMQTT() {
+  if (!mqtt.connected() && millis() - lastMqttReconnect > 5000) {
+    lastMqttReconnect = millis();
+    reconnectMQTT();
+  }
+}
+
+// ============================================================
 // PHASE A: TOUCH → ENTRY GATE
 // ============================================================
 void checkTouch() {
@@ -277,7 +366,7 @@ void checkServoEntry() {
 }
 
 // ============================================================
-// PHASE B: SLOT CHECK-IN (RFID1 or RFID2) — v3.0 HTTP-only
+// PHASE B: SLOT CHECK-IN (RFID1 or RFID2) — v3.0 with plate check
 // ============================================================
 void checkSlotRFID() {
   for (int i = 0; i < 2; i++) {
@@ -286,6 +375,19 @@ void checkSlotRFID() {
 
     int slot = i + 1;
     Serial.printf("[B] Slot %d tap: %s\n", slot, uid.c_str());
+
+    String& plateRef = (slot == 1) ? plateSlot1 : plateSlot2;
+    unsigned long& plateTime = (slot == 1) ? plateSlot1Time : plateSlot2Time;
+
+    // Check if plate detected + not expired
+    if (plateRef.length() == 0 || millis() - plateTime > PLATE_EXPIRY_MS) {
+      lcdShow("Slot " + String(slot), "Plat tdk terdeteksi");
+      Serial.printf("[B] Slot %d: no plate detected, rejecting\n", slot);
+      delay(2000);
+      lcdShow("Tap kartu", "untuk parkir");
+      state = STATE_IDLE;
+      return;
+    }
 
     lcdShow("Slot " + String(slot), "Mendaftar...");
     postRegisterCard(uid, slot);
@@ -369,7 +471,7 @@ String scanRFID(int index) {
 }
 
 // ============================================================
-// HTTP: PUT /api/parking/register-card (v3.0 — HTTP-only)
+// HTTP: PUT /api/parking/register-card (v3.0)
 // ============================================================
 void postRegisterCard(String uid, int slot) {
   if (WiFi.status() != WL_CONNECTED) {
@@ -380,6 +482,8 @@ void postRegisterCard(String uid, int slot) {
     return;
   }
 
+  String& plateRef = (slot == 1) ? plateSlot1 : plateSlot2;
+
   HTTPClient http;
   http.begin(String(API_BASE_URL) + "/api/parking/register-card");
   http.addHeader("Content-Type", "application/json");
@@ -388,6 +492,7 @@ void postRegisterCard(String uid, int slot) {
   JsonDocument doc;
   doc["card_uid"] = uid;
   doc["parking_space_id"] = "SPACE-0" + String(slot);
+  doc["plate_number"] = plateRef;
   doc["space_label"] = "SLOT_" + String(slot);
 
   String body;
@@ -403,6 +508,8 @@ void postRegisterCard(String uid, int slot) {
     if (!deserializeJson(r, resp) && r["success"]) {
       String name = r["user_name"] | "User";
       lcdShow("Registrasi OK", name);
+      slotWaitingRFID[slot - 1] = false;
+      plateRef = "";
     } else {
       lcdShow("Register Gagal", "Coba lagi");
     }

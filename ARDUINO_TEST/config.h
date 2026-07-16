@@ -15,10 +15,7 @@
 // ============================================================
 // Backend API (placeholder — ganti dengan URL server kamu)
 // ============================================================
-// Local (development):
-// #define API_BASE_URL  "http://10.110.138.238:8000"
-// Cloud (production demo):
-#define API_BASE_URL  "https://stopbay-xxxx.onrender.com"  // TODO: ganti setelah deploy Render
+#define API_BASE_URL  "http://alamat-database-kamu.com"
 
 // ============================================================
 // LCD I2C (16x2, alamat 0x27)
@@ -69,9 +66,17 @@
 #define FARE_PER_HOUR  1000  // Rp 1.000 per jam
 
 // ============================================================
+// MQTT Broker (v3.0)
+// ============================================================
+#define MQTT_BROKER    "192.168.1.100"  // Laptop IP (ganti sesuai)
+#define MQTT_PORT      1883
+#define MQTT_TOPIC_SLOT1  "plates/slot1"
+#define MQTT_TOPIC_SLOT2  "plates/slot2"
+
+// ============================================================
 // ESP32-S/CAM IPs (v3.0)
 // ============================================================
-#define CAM_SLOT1_IP   "10.110.138.190"  // CAM 1
-#define CAM_SLOT2_IP   "10.110.138.158"  // CAM 2
+#define CAM_SLOT1_IP   "192.168.1.101"  // ganti sesuai
+#define CAM_SLOT2_IP   "192.168.1.102"  // ganti sesuai
 
 #endif
