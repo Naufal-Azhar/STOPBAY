@@ -295,31 +295,39 @@ def process_exit(req: ExitRequest, db: Session = Depends(get_db)):
     session = db.query(ActiveParking).filter(
         ActiveParking.card_uid == req.card_uid, ActiveParking.status == "ACTIVE",
     ).first()
+
     if not session:
-        raise HTTPException(404, "No active session found")
+        # Card never tapped a slot — nothing to bill, nothing to log
+        return ExitResponse(success=True, message="Exit — no active session", total_fare=0)
 
     user = db.query(User).filter(User.card_uid == req.card_uid).first()
     now = datetime.now(timezone.utc)
     entry = session.entry_time.replace(tzinfo=timezone.utc) if session.entry_time.tzinfo is None else session.entry_time
+    elapsed_min = (now - entry).total_seconds() / 60.0
     dur_h = round((now - entry).total_seconds() / 3600.0, 2)
-    fare = max(int(dur_h * FARE_PER_HOUR), FARE_PER_HOUR)
 
-    bal_before = user.balance if user else 0
-    bal_after = max(bal_before - fare, 0) if user else 0
-    if bal_before < fare:
-        # Saldo kurang — tetap proses tapi log
-        bal_after = 0
-
-    if user:
-        user.balance = bal_after
-        user.last_seen = now
+    if elapsed_min < GRACE_MINUTES:
+        fare = 0
+        payment_method = "FREE_EXIT"
+        bal_before = bal_after = (user.balance if user else 0)
+    else:
+        fare = max(int(dur_h * FARE_PER_HOUR), FARE_PER_HOUR)
+        payment_method = "DUMMY_BALANCE"
+        bal_before = user.balance if user else 0
+        bal_after = max(bal_before - fare, 0) if user else 0
+        if bal_before < fare:
+            # Saldo kurang — tetap proses tapi log
+            bal_after = 0
+        if user:
+            user.balance = bal_after
+            user.last_seen = now
 
     log = ParkingLog(
         plate_number=session.plate_number, card_uid=session.card_uid,
         start_time=session.entry_time, end_time=now, total_fare=fare,
         parking_space_id=session.parking_space_id, space_label=session.space_label,
         user_name=session.user_name, nik=session.nik,
-        snapshot_url=session.snapshot_url, payment_method="DUMMY_BALANCE",
+        snapshot_url=session.snapshot_url, payment_method=payment_method,
         balance_before=bal_before, balance_after=bal_after, forced_billing=False,
     )
     db.add(log)
