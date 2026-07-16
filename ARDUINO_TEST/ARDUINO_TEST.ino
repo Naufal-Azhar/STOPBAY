@@ -480,11 +480,15 @@ void postExit(String uid) {
     JsonDocument r;
     if (!deserializeJson(r, resp) && r["success"]) {
       int fare = r["total_fare"] | 0;
-      char buf[32];
-      snprintf(buf, sizeof(buf), "Rp %d,-", fare);
       state = STATE_EXIT_GATE;
       openExitGate();
-      lcdStartRunningText("Tarif: " + String(buf) + " — Selamat jalan!");
+      if (fare == 0) {
+        lcdStartRunningText("Keluar gratis — terima kasih!");
+      } else {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Rp %d,-", fare);
+        lcdStartRunningText("Tarif: " + String(buf) + " — Selamat jalan!");
+      }
     } else {
       lcdShow("Pembayaran", "Gagal");
       delay(2000);
