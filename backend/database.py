@@ -13,7 +13,7 @@ load_dotenv()
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "sqlite:///stopbay.db"  # SQLite default (Render demo), override with PostgreSQL env
+    "postgresql://postgres:postgres@localhost:5432/stopbay"
 )
 
 engine = create_engine(DATABASE_URL, echo=False, pool_pre_ping=True)

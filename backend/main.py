@@ -20,7 +20,7 @@ Endpoints:
   GET    /api/stream/{slot}               (NEW v3)
 """
 
-import asyncio, json, os, random, uuid
+import asyncio, json, random, uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -557,5 +557,4 @@ async def stream_slot(slot: int):
 # ============================================================
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
