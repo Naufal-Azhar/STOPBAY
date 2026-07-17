@@ -21,12 +21,14 @@ Endpoints:
 """
 
 import json, random, uuid
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -63,6 +65,9 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="STOPBAY v3.0", version="3.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
+
+os.makedirs("captures", exist_ok=True)
+app.mount("/captures", StaticFiles(directory="captures"), name="captures")
 
 app.include_router(ota_router)
 app.include_router(push_router)
