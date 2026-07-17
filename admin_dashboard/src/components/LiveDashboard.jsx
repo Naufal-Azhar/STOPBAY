@@ -11,6 +11,9 @@ export default function LiveDashboard({ t }) {
   const [streamKey1, setStreamKey1] = useState(0);
   const [streamKey2, setStreamKey2] = useState(0);
 
+  const [streamActive1, setStreamActive1] = useState(false);
+  const [streamActive2, setStreamActive2] = useState(false);
+
   const fetchAll = useCallback(async () => {
     try {
       const [sRes, aRes] = await Promise.all([fetch(`${API}/parking/stats`), fetch(`${API}/parking/active`)]);
@@ -48,17 +51,26 @@ export default function LiveDashboard({ t }) {
 
   if (loading) return <Spin size="large" style={{ display: 'block', margin: '64px auto' }} />;
 
-  const renderSlotCamera = (slot, streamKey, setStreamKey) => {
+  const renderSlotCamera = (slot, streamKey, setStreamKey, active, setActive) => {
     const session = getSessionForSlot(slot);
     return (
       <div style={{ textAlign: 'center' }}>
         <Text strong>Slot {slot}</Text>
-        <img
-          src={`${API}/stream/${slot}?t=${streamKey}`}
-          alt={`Camera Slot ${slot}`}
-          style={{ width: '100%', borderRadius: 12, border: '2px solid #e8e8e8', marginTop: 8, minHeight: 240, background: '#f5f5f5' }}
-          onError={() => setTimeout(() => setStreamKey(Date.now()), 3000)}
-        />
+        {active ? (
+          <img
+            src={`${API}/stream/${slot}?t=${streamKey}`}
+            alt={`Camera Slot ${slot}`}
+            style={{ width: '100%', borderRadius: 12, border: '2px solid #e8e8e8', marginTop: 8, minHeight: 240, background: '#f5f5f5' }}
+            onError={() => { setActive(false); setTimeout(() => setStreamKey(Date.now()), 3000); }}
+          />
+        ) : (
+          <div
+            onClick={() => setActive(true)}
+            style={{ width: '100%', borderRadius: 12, border: '2px dashed #d9d9d9', marginTop: 8, minHeight: 240, background: '#f5f5f5', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+          >
+            <Text type="secondary">Klik untuk lihat stream</Text>
+          </div>
+        )}
         {session?.snapshot_url && (
           <div style={{ marginTop: 8 }}>
             <Text type="secondary" style={{ display: 'block', marginBottom: 4 }}>Plat terdeteksi</Text>
@@ -119,8 +131,8 @@ export default function LiveDashboard({ t }) {
 
       <Card title="Live Camera Stream">
         <Row gutter={[16, 16]}>
-          <Col xs={24} md={12}>{renderSlotCamera(1, streamKey1, setStreamKey1)}</Col>
-          <Col xs={24} md={12}>{renderSlotCamera(2, streamKey2, setStreamKey2)}</Col>
+          <Col xs={24} md={12}>{renderSlotCamera(1, streamKey1, setStreamKey1, streamActive1, setStreamActive1)}</Col>
+          <Col xs={24} md={12}>{renderSlotCamera(2, streamKey2, setStreamKey2, streamActive2, setStreamActive2)}</Col>
         </Row>
       </Card>
     </div>
