@@ -26,6 +26,7 @@
 #include <LiquidCrystal_PCF8574.h>
 #include <ESP32Servo.h>
 #include <ArduinoJson.h>
+#include <ArduinoOTA.h>
 #include "config.h"
 
 // ============================================================
@@ -162,6 +163,13 @@ void setup() {
   // WiFi
   connectWiFi();
 
+  // OTA
+  ArduinoOTA.setHostname("stopbay-main");
+  ArduinoOTA.onStart([]() { Serial.println("[OTA] Start"); });
+  ArduinoOTA.onEnd([]() { Serial.println("[OTA] Done"); });
+  ArduinoOTA.onError([](ota_error_t e) { Serial.printf("[OTA] Error %u\n", e); });
+  ArduinoOTA.begin();
+
   // Ready
   state = STATE_IDLE;
   lcdShow("Tap kartu", "untuk parkir");
@@ -172,6 +180,7 @@ void setup() {
 // LOOP
 // ============================================================
 void loop() {
+  ArduinoOTA.handle();
   maintainWiFi();
 
   // Debug: print state every 2s

@@ -7,6 +7,7 @@
 #include "esp_camera.h"
 #include <WiFi.h>
 #include "esp_http_server.h"
+#include <ArduinoOTA.h>
 
 // ============================================================
 // WiFi
@@ -195,11 +196,21 @@ void setup() {
   Serial.println(WiFi.localIP());
   Serial.println("/cam.mjpeg");
 
+  // OTA (upload firmware via WiFi, no USB needed)
+  ArduinoOTA.setHostname("esp32cam");
+  ArduinoOTA.onStart([]() { Serial.println("[OTA] Start"); });
+  ArduinoOTA.onEnd([]() { Serial.println("[OTA] Done"); });
+  ArduinoOTA.onError([](ota_error_t e) { Serial.printf("[OTA] Error %u\n", e); });
+  ArduinoOTA.begin();
+  Serial.println("[OTA] Ready");
+
   // Start stream server
   startCameraServer();
 }
 
 void loop() {
+  ArduinoOTA.handle();
+
   static unsigned long lastCheck = 0;
   if (millis() - lastCheck > 30000) {
     lastCheck = millis();
