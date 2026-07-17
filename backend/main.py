@@ -523,7 +523,7 @@ def get_by_plate(plate: str, db: Session = Depends(get_db)):
 async def stream_slot(slot: int):
     return StreamingResponse(
         proxy_stream(slot),
-        media_type="multipart/x-mixed-replace; boundary=frame",
+        media_type="multipart/x-mixed-replace; boundary=123456789000000000000987654321",
     )
 
 
