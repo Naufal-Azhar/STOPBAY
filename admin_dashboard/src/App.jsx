@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Layout, Tabs, Button, Typography } from 'antd';
+import { Layout, Tabs, Button, Typography, ConfigProvider } from 'antd';
 import LiveDashboard from './components/LiveDashboard';
 import HistoryDashboard from './components/HistoryDashboard';
 import UsersDashboard from './components/UsersDashboard';
@@ -57,6 +57,7 @@ export default function App() {
   ];
 
   return (
+    <ConfigProvider theme={{ token: { colorPrimary: '#2f54eb', borderRadius: 4 } }}>
     <Layout style={{ minHeight: '100vh' }}>
       <Header style={{ background: 'linear-gradient(90deg, #5A9BD5, #7CB9E8)', color: '#fff', padding: '16px 24px', height: 'auto', lineHeight: 'normal' }}>
         <div style={{ maxWidth: 1200, margin: '0 auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -77,5 +78,6 @@ export default function App() {
         <Tabs activeKey={tab} onChange={setTab} items={items} />
       </Content>
     </Layout>
+    </ConfigProvider>
   );
 }
