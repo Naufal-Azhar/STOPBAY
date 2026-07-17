@@ -143,7 +143,7 @@ void initCamera() {
   config.pin_reset     = RESET_GPIO_NUM;
   config.xclk_freq_hz  = 10000000;         // 10MHz (stable)
   config.pixel_format  = PIXFORMAT_JPEG;
-  config.frame_size    = FRAMESIZE_QQVGA;  // 160x120 (minimal lag)
+  config.frame_size    = FRAMESIZE_QVGA;   // 320x240 (readable plates)
   config.jpeg_quality  = 8;                // 0-63, lower=better quality
   config.fb_count      = 1;
   config.fb_location   = CAMERA_FB_IN_DRAM;
