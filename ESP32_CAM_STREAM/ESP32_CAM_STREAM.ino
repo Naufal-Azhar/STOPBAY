@@ -198,6 +198,7 @@ void setup() {
 
   // OTA (upload firmware via WiFi, no USB needed)
   ArduinoOTA.setHostname("esp32cam");
+  ArduinoOTA.setPassword("admin");
   ArduinoOTA.onStart([]() { Serial.println("[OTA] Start"); });
   ArduinoOTA.onEnd([]() { Serial.println("[OTA] Done"); });
   ArduinoOTA.onError([](ota_error_t e) { Serial.printf("[OTA] Error %u\n", e); });

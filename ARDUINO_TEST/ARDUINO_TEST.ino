@@ -165,6 +165,7 @@ void setup() {
 
   // OTA
   ArduinoOTA.setHostname("stopbay-main");
+  ArduinoOTA.setPassword("admin");
   ArduinoOTA.onStart([]() { Serial.println("[OTA] Start"); });
   ArduinoOTA.onEnd([]() { Serial.println("[OTA] Done"); });
   ArduinoOTA.onError([](ota_error_t e) { Serial.printf("[OTA] Error %u\n", e); });
