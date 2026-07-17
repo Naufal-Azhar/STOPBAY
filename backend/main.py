@@ -48,8 +48,8 @@ from services.push_notification import router as push_router
 # ============================================================
 # CONFIG
 # ============================================================
-FARE_PER_HOUR = 1000  # v3: Rp 1.000/jam
-GRACE_MINUTES = 5
+FARE_PER_HOUR = 5000  # v3: Rp 5.000/jam
+GRACE_MINUTES = 2
 FORCED_BILLING_FARE = FARE_PER_HOUR
 
 
